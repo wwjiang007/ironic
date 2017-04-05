@@ -16,7 +16,7 @@ with a unified interface to a heterogeneous fleet of servers while also
 providing the Compute service with an interface that allows physical servers to
 be managed as though they were virtual machines.
 
-`An introduction to ironic's conceptual architecture <deploy/user-guide.html>`_
+:doc:`An introduction to ironic's conceptual architecture <deploy/user-guide>`
 is available for those new to the project.
 
 Site Notes
@@ -109,7 +109,7 @@ the developer community about any implementation using this functionality.
   :maxdepth: 1
 
   Driver Overview <dev/drivers>
-  Driver Base Class Definition <api/ironic.drivers.base.html>
+  Driver Base Class Definition <api/ironic.drivers.base>
   Writing "vendor_passthru" methods <dev/vendor-passthru>
   Third party continuous integration testing <dev/third-party-ci>
 
@@ -161,10 +161,12 @@ of ironic that may or may not be suitable to every situation.
   Security considerations for your Bare Metal installation <deploy/security>
   Adopting Nodes in an ACTIVE state <deploy/adoption>
   Configuring for Multi-tenant Networking <deploy/multitenancy>
+  Configuring for port groups <deploy/portgroups>
   Configuring node web or serial console <deploy/console>
   Emitting software metrics <deploy/metrics>
   Auditing API Traffic <deploy/api-audit-support>
   Notifications <deploy/notifications>
+  Ceph Object Gateway support <deploy/radosgw>
   Configuration Reference <http://docs.openstack.org/draft/config-reference/bare-metal.html>
   Sample configuration file <https://git.openstack.org/cgit/openstack/ironic/tree/etc/ironic/ironic.conf.sample>
 
@@ -209,3 +211,16 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
+
+.. # NOTE(jaegerandi): This is where we hide things that we don't want
+   # shown in the top level table of contents. api/autoindex is hidden
+   # since it's in the modindex link above.
+   # deploy/user-guide is referenced above but not in a toctree.
+.. toctree::
+   :hidden:
+
+   api/autoindex
+   deploy/install-guide.rst
+   deploy/user-guide.rst
+   releasenotes/index
+   webapi/v1.rst

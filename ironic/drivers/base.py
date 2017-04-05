@@ -31,6 +31,7 @@ import six
 from ironic.common import exception
 from ironic.common.i18n import _, _LE, _LW
 from ironic.common import raid
+from ironic.common import states
 from ironic.drivers.modules.network import common as net_common
 
 LOG = logging.getLogger(__name__)
@@ -56,25 +57,24 @@ class BaseDriver(object):
     third-party CI, or in the process of being deprecated.
     """
 
-    core_interfaces = []
-    standard_interfaces = []
+    # NOTE(jlvillal): These should be tuples to help prevent child classes from
+    # accidentally modifying the base class values.
+    core_interfaces = ('deploy', 'power')
+    standard_interfaces = ('boot', 'console', 'inspect', 'management', 'raid')
 
     power = None
-    core_interfaces.append('power')
     """`Core` attribute for managing power state.
 
     A reference to an instance of :class:PowerInterface.
     """
 
     deploy = None
-    core_interfaces.append('deploy')
     """`Core` attribute for managing deployments.
 
     A reference to an instance of :class:DeployInterface.
     """
 
     console = None
-    standard_interfaces.append('console')
     """`Standard` attribute for managing console access.
 
     A reference to an instance of :class:ConsoleInterface.
@@ -97,7 +97,6 @@ class BaseDriver(object):
     A reference to an instance of :class:ManagementInterface.
     May be None, if unsupported by a driver.
     """
-    standard_interfaces.append('management')
 
     boot = None
     """`Standard` attribute for boot related features.
@@ -105,7 +104,6 @@ class BaseDriver(object):
     A reference to an instance of :class:BootInterface.
     May be None, if unsupported by a driver.
     """
-    standard_interfaces.append('boot')
 
     vendor = None
     """Attribute for accessing any vendor-specific extensions.
@@ -120,7 +118,6 @@ class BaseDriver(object):
     A reference to an instance of :class:InspectInterface.
     May be None, if unsupported by a driver.
     """
-    standard_interfaces.append('inspect')
 
     raid = None
     """`Standard` attribute for RAID related features.
@@ -128,19 +125,18 @@ class BaseDriver(object):
     A reference to an instance of :class:RaidInterface.
     May be None, if unsupported by a driver.
     """
-    standard_interfaces.append('raid')
 
-    @abc.abstractmethod
     def __init__(self):
         pass
 
     @property
     def all_interfaces(self):
-        return self.core_interfaces + self.standard_interfaces + ['vendor']
+        return (list(self.core_interfaces + self.standard_interfaces) +
+                ['vendor'])
 
     @property
     def non_vendor_interfaces(self):
-        return self.core_interfaces + self.standard_interfaces
+        return list(self.core_interfaces + self.standard_interfaces)
 
     def get_properties(self):
         """Get the properties of the driver.
@@ -163,20 +159,19 @@ class BareDriver(BaseDriver):
     class, as well as appended to core_interfaces or standard_interfaces here.
     """
 
-    def __init__(self):
-        self.network = None
-        """`Core` attribute for network connectivity.
+    network = None
+    """`Core` attribute for network connectivity.
 
-        A reference to an instance of :class:NetworkInterface.
-        """
-        self.core_interfaces.append('network')
+    A reference to an instance of :class:NetworkInterface.
+    """
+    core_interfaces = BaseDriver.core_interfaces + ('network',)
 
-        self.storage = None
-        """`Standard` attribute for (remote) storage interface.
+    storage = None
+    """`Standard` attribute for (remote) storage interface.
 
-        A reference to an instance of :class:StorageInterface.
-        """
-        self.standard_interfaces.append('storage')
+    A reference to an instance of :class:StorageInterface.
+    """
+    standard_interfaces = BaseDriver.standard_interfaces + ('storage',)
 
 
 ALL_INTERFACES = set(BareDriver().all_interfaces)
@@ -493,24 +488,37 @@ class PowerInterface(BaseInterface):
         """
 
     @abc.abstractmethod
-    def set_power_state(self, task, power_state):
+    def set_power_state(self, task, power_state, timeout=None):
         """Set the power state of the task's node.
 
         :param task: a TaskManager instance containing the node to act on.
         :param power_state: Any power state from :mod:`ironic.common.states`.
+        :param timeout: timeout (in seconds) positive integer (> 0) for any
+          power state. ``None`` indicates to use default timeout.
         :raises: MissingParameterValue if a required parameter is missing.
         """
 
     @abc.abstractmethod
-    def reboot(self, task):
+    def reboot(self, task, timeout=None):
         """Perform a hard reboot of the task's node.
 
         Drivers are expected to properly handle case when node is powered off
         by powering it on.
 
         :param task: a TaskManager instance containing the node to act on.
+        :param timeout: timeout (in seconds) positive integer (> 0) for any
+          power state. ``None`` indicates to use default timeout.
         :raises: MissingParameterValue if a required parameter is missing.
         """
+
+    def get_supported_power_states(self, task):
+        """Get a list of the supported power states.
+
+        :param task: A TaskManager instance containing the node to act on.
+        :returns: A list with the supported power states defined
+                  in :mod:`ironic.common.states`.
+        """
+        return [states.POWER_ON, states.POWER_OFF, states.REBOOT]
 
 
 class ConsoleInterface(BaseInterface):
@@ -808,6 +816,17 @@ class ManagementInterface(BaseInterface):
                       }
         """
 
+    def inject_nmi(self, task):
+        """Inject NMI, Non Maskable Interrupt.
+
+        Inject NMI (Non Maskable Interrupt) for a node immediately.
+
+        :param task: A TaskManager instance containing the node to act on.
+        :raises: UnsupportedDriverExtension
+        """
+        raise exception.UnsupportedDriverExtension(
+            driver=task.node.driver, extension='inject_nmi')
+
 
 class InspectInterface(BaseInterface):
     """Interface for inspection-related actions."""
@@ -1056,14 +1075,14 @@ class NetworkInterface(BaseInterface):
         We are booting the node only in one network at a time, and presence of
         cleaning_vif_port_id means we're doing cleaning, of
         provisioning_vif_port_id - provisioning.
-        Otherwise it's a tenant network
+        Otherwise it's a tenant network.
 
         :param task: A TaskManager instance.
         :param p_obj: Ironic port or portgroup object.
         :returns: VIF ID associated with p_obj or None.
         """
         default_impl = net_common.VIFPortIDMixin()
-        if not self.__class__._deprecated_get_current_vif_shown:
+        if not self._deprecated_get_current_vif_shown:
             self.__class__._deprecated_get_current_vif_shown = True
             LOG.warning(_LW('The network interface %s should be updated to '
                             'implement the get_current_vif function. Falling '

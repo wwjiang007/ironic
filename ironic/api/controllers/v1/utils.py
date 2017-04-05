@@ -54,6 +54,17 @@ MIN_VERB_VERSIONS = {
     states.VERBS['adopt']: versions.MINOR_17_ADOPT_VERB,
 }
 
+V31_FIELDS = [
+    'boot_interface',
+    'console_interface',
+    'deploy_interface',
+    'inspect_interface',
+    'management_interface',
+    'power_interface',
+    'raid_interface',
+    'vendor_interface',
+]
+
 
 def validate_limit(limit):
     if limit is None:
@@ -78,7 +89,7 @@ def apply_jsonpatch(doc, patch):
         if p['op'] == 'add' and p['path'].count('/') == 1:
             if p['path'].lstrip('/') not in doc:
                 msg = _('Adding a new attribute (%s) to the root of '
-                        ' the resource is not allowed')
+                        'the resource is not allowed')
                 raise wsme.exc.ClientSideError(msg % p['path'])
     return jsonpatch.apply_patch(doc, jsonpatch.JsonPatch(patch))
 
@@ -286,6 +297,9 @@ def check_allowed_fields(fields):
         raise exception.NotAcceptable()
     if 'resource_class' in fields and not allow_resource_class():
         raise exception.NotAcceptable()
+    if not allow_dynamic_interfaces():
+        if set(V31_FIELDS).intersection(set(fields)):
+            raise exception.NotAcceptable()
 
 
 def check_allowed_portgroup_fields(fields):
@@ -350,6 +364,32 @@ def check_allow_specify_resource_class(resource_class):
              'opr': versions.MINOR_21_RESOURCE_CLASS})
 
 
+def check_allow_filter_driver_type(driver_type):
+    """Check if filtering drivers by classic/dynamic is allowed.
+
+    Version 1.30 of the API allows this.
+    """
+    if driver_type is not None and not allow_dynamic_drivers():
+        raise exception.NotAcceptable(_(
+            "Request not acceptable. The minimal required API version "
+            "should be %(base)s.%(opr)s") %
+            {'base': versions.BASE_VERSION,
+             'opr': versions.MINOR_30_DYNAMIC_DRIVERS})
+
+
+def check_allow_driver_detail(detail):
+    """Check if getting detailed driver info is allowed.
+
+    Version 1.30 of the API allows this.
+    """
+    if detail is not None and not allow_dynamic_drivers():
+        raise exception.NotAcceptable(_(
+            "Request not acceptable. The minimal required API version "
+            "should be %(base)s.%(opr)s") %
+            {'base': versions.BASE_VERSION,
+             'opr': versions.MINOR_30_DYNAMIC_DRIVERS})
+
+
 def initial_node_provision_state():
     """Return node state to use by default when creating new nodes.
 
@@ -367,6 +407,23 @@ def allow_raid_config():
     Version 1.12 of the API allows RAID configuration for the node.
     """
     return pecan.request.version.minor >= versions.MINOR_12_RAID_CONFIG
+
+
+def allow_soft_power_off():
+    """Check if Soft Power Off is allowed for the node.
+
+    Version 1.27 of the API allows Soft Power Off, including Soft Reboot, for
+    the node.
+    """
+    return pecan.request.version.minor >= versions.MINOR_27_SOFT_POWER_OFF
+
+
+def allow_inject_nmi():
+    """Check if Inject NMI is allowed for the node.
+
+    Version 1.29 of the API allows Inject NMI for the node.
+    """
+    return pecan.request.version.minor >= versions.MINOR_29_INJECT_NMI
 
 
 def allow_links_node_states_and_driver_properties():
@@ -460,6 +517,36 @@ def allow_portgroup_mode_properties():
     """
     return (pecan.request.version.minor >=
             versions.MINOR_26_PORTGROUP_MODE_PROPERTIES)
+
+
+def allow_vifs_subcontroller():
+    """Check if node/vifs can be used.
+
+    Version 1.28 of the API added support for VIFs to be
+    attached to Nodes.
+    """
+    return (pecan.request.version.minor >=
+            versions.MINOR_28_VIFS_SUBCONTROLLER)
+
+
+def allow_dynamic_drivers():
+    """Check if dynamic driver API calls are allowed.
+
+    Version 1.30 of the API added support for all of the driver
+    composition related calls in the /v1/drivers API.
+    """
+    return (pecan.request.version.minor >=
+            versions.MINOR_30_DYNAMIC_DRIVERS)
+
+
+def allow_dynamic_interfaces():
+    """Check if dynamic interface fields are allowed.
+
+    Version 1.31 of the API added support for viewing and setting the fields
+    in ``V31_FIELDS`` on the node object.
+    """
+    return (pecan.request.version.minor >=
+            versions.MINOR_31_DYNAMIC_INTERFACES)
 
 
 def get_controller_reserved_names(cls):

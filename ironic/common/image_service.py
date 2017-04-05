@@ -45,8 +45,11 @@ def _get_glance_session():
     return _GLANCE_SESSION
 
 
-def GlanceImageService(client=None, version=1, context=None):
+def GlanceImageService(client=None, version=None, context=None):
     module_str = 'ironic.common.glance_service'
+    if version is None:
+        version = CONF.glance.glance_api_version
+
     module = importutils.import_versioned_module(module_str, version,
                                                  'image_service')
     service_class = getattr(module, 'GlanceImageService')
@@ -95,23 +98,26 @@ class BaseImageService(object):
 class HttpImageService(BaseImageService):
     """Provides retrieval of disk images using HTTP."""
 
-    def validate_href(self, image_href):
+    def validate_href(self, image_href, secret=False):
         """Validate HTTP image reference.
 
         :param image_href: Image reference.
+        :param secret: Specify if image_href being validated should not be
+            shown in exception message.
         :raises: exception.ImageRefValidationFailed if HEAD request failed or
             returned response code not equal to 200.
         :returns: Response to HEAD request.
         """
+        output_url = 'secreturl' if secret else image_href
         try:
             response = requests.head(image_href)
             if response.status_code != http_client.OK:
                 raise exception.ImageRefValidationFailed(
-                    image_href=image_href,
+                    image_href=output_url,
                     reason=_("Got HTTP code %s instead of 200 in response to "
                              "HEAD request.") % response.status_code)
         except requests.RequestException as e:
-            raise exception.ImageRefValidationFailed(image_href=image_href,
+            raise exception.ImageRefValidationFailed(image_href=output_url,
                                                      reason=e)
         return response
 
@@ -258,7 +264,7 @@ protocol_mapping = {
 }
 
 
-def get_image_service(image_href, client=None, version=1, context=None):
+def get_image_service(image_href, client=None, version=None, context=None):
     """Get image service instance to download the image.
 
     :param image_href: String containing href to get image service for.

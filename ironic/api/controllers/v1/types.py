@@ -117,7 +117,7 @@ class BooleanType(wtypes.UserType):
             return strutils.bool_from_string(value, strict=True)
         except ValueError as e:
             # raise Invalid to return 400 (BadRequest) in the API
-            raise exception.Invalid(e)
+            raise exception.Invalid(six.text_type(e))
 
     @staticmethod
     def frombasetype(value):
@@ -328,3 +328,33 @@ class LocalLinkConnectionType(wtypes.UserType):
         return LocalLinkConnectionType.validate(value)
 
 locallinkconnectiontype = LocalLinkConnectionType()
+
+
+class VifType(JsonType):
+
+    basetype = wtypes.text
+    name = 'viftype'
+
+    mandatory_fields = {'id'}
+
+    @staticmethod
+    def validate(value):
+        super(VifType, VifType).validate(value)
+        keys = set(value)
+        # Check all mandatory fields are present
+        missing = VifType.mandatory_fields - keys
+        if missing:
+            msg = _('Missing mandatory keys: %s') % ', '.join(list(missing))
+            raise exception.Invalid(msg)
+        UuidOrNameType.validate(value['id'])
+
+        return value
+
+    @staticmethod
+    def frombasetype(value):
+        if value is None:
+            return None
+        return VifType.validate(value)
+
+
+viftype = VifType()

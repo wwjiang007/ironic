@@ -68,7 +68,7 @@ class TestFlatInterface(db_base.DbTestCase):
             mock_p_changed.assert_called_once_with(task, port)
 
     @mock.patch.object(flat_interface, 'LOG')
-    def test_init_incorrect_cleaning_net(self, mock_log):
+    def test_init_no_cleaning_network(self, mock_log):
         self.config(cleaning_network=None, group='neutron')
         flat_interface.FlatNetwork()
         self.assertTrue(mock_log.warning.called)
@@ -92,7 +92,7 @@ class TestFlatInterface(db_base.DbTestCase):
             rollback_mock.assert_called_once_with(
                 task, CONF.neutron.cleaning_network)
             add_mock.assert_called_once_with(
-                task, CONF.neutron.cleaning_network, is_flat=True)
+                task, CONF.neutron.cleaning_network)
             validate_mock.assert_called_once_with(
                 CONF.neutron.cleaning_network,
                 'cleaning network')
@@ -131,6 +131,29 @@ class TestFlatInterface(db_base.DbTestCase):
         with task_manager.acquire(self.context, self.node.id) as task:
             self.interface.add_provisioning_network(task)
         upd_mock.assert_called_once_with('foo', exp_body)
+
+    @mock.patch.object(neutron, 'get_client')
+    def test_add_provisioning_network_set_binding_host_id_portgroup(
+            self, client_mock):
+        upd_mock = mock.Mock()
+        client_mock.return_value.update_port = upd_mock
+        instance_info = self.node.instance_info
+        instance_info['nova_host_id'] = 'nova_host_id'
+        self.node.instance_info = instance_info
+        self.node.save()
+        internal_info = {'tenant_vif_port_id': 'foo'}
+        utils.create_test_portgroup(
+            self.context, node_id=self.node.id, internal_info=internal_info,
+            uuid=uuidutils.generate_uuid())
+        utils.create_test_port(
+            self.context, node_id=self.node.id, address='52:54:00:cf:2d:33',
+            extra={'vif_port_id': 'bar'}, uuid=uuidutils.generate_uuid())
+        exp_body = {'port': {'binding:host_id': 'nova_host_id'}}
+        with task_manager.acquire(self.context, self.node.id) as task:
+            self.interface.add_provisioning_network(task)
+        upd_mock.assert_has_calls([
+            mock.call('bar', exp_body), mock.call('foo', exp_body)
+        ])
 
     @mock.patch.object(neutron, 'get_client')
     def test_add_provisioning_network_no_binding_host_id(

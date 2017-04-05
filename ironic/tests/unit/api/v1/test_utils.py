@@ -222,6 +222,43 @@ class TestApiUtils(base.TestCase):
                           utils.check_allow_specify_resource_class, ['foo'])
 
     @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_filter_driver_type(self, mock_request):
+        mock_request.version.minor = 30
+        self.assertIsNone(utils.check_allow_filter_driver_type('classic'))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_filter_driver_type_none(self, mock_request):
+        mock_request.version.minor = 29
+        self.assertIsNone(utils.check_allow_filter_driver_type(None))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_filter_driver_type_fail(self, mock_request):
+        mock_request.version.minor = 29
+        self.assertRaises(exception.NotAcceptable,
+                          utils.check_allow_filter_driver_type, 'classic')
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_driver_detail(self, mock_request):
+        mock_request.version.minor = 30
+        self.assertIsNone(utils.check_allow_driver_detail(True))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_driver_detail_false(self, mock_request):
+        mock_request.version.minor = 30
+        self.assertIsNone(utils.check_allow_driver_detail(False))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_driver_detail_none(self, mock_request):
+        mock_request.version.minor = 29
+        self.assertIsNone(utils.check_allow_driver_detail(None))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_driver_detail_fail(self, mock_request):
+        mock_request.version.minor = 29
+        self.assertRaises(exception.NotAcceptable,
+                          utils.check_allow_driver_detail, True)
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
     def test_check_allow_manage_verbs(self, mock_request):
         mock_request.version.minor = 4
         utils.check_allow_management_verbs('manage')
@@ -279,6 +316,13 @@ class TestApiUtils(base.TestCase):
     @mock.patch.object(pecan, 'request', spec_set=['version'])
     def test_check_allow_unknown_verbs(self, mock_request):
         utils.check_allow_management_verbs('rebuild')
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_allow_inject_nmi(self, mock_request):
+        mock_request.version.minor = 29
+        self.assertTrue(utils.allow_inject_nmi())
+        mock_request.version.minor = 28
+        self.assertFalse(utils.allow_inject_nmi())
 
     @mock.patch.object(pecan, 'request', spec_set=['version'])
     def test_allow_links_node_states_and_driver_properties(self, mock_request):
@@ -360,6 +404,13 @@ class TestApiUtils(base.TestCase):
         self.assertTrue(utils.allow_portgroup_mode_properties())
         mock_request.version.minor = 25
         self.assertFalse(utils.allow_portgroup_mode_properties())
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_allow_dynamic_drivers(self, mock_request):
+        mock_request.version.minor = 30
+        self.assertTrue(utils.allow_dynamic_drivers())
+        mock_request.version.minor = 29
+        self.assertFalse(utils.allow_dynamic_drivers())
 
 
 class TestNodeIdent(base.TestCase):

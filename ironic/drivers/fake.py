@@ -36,24 +36,19 @@ from ironic.drivers.modules.ilo import inspect as ilo_inspect
 from ironic.drivers.modules.ilo import management as ilo_management
 from ironic.drivers.modules.ilo import power as ilo_power
 from ironic.drivers.modules import inspector
-from ironic.drivers.modules import ipminative
 from ironic.drivers.modules import ipmitool
 from ironic.drivers.modules.irmc import inspect as irmc_inspect
 from ironic.drivers.modules.irmc import management as irmc_management
 from ironic.drivers.modules.irmc import power as irmc_power
 from ironic.drivers.modules import iscsi_deploy
-from ironic.drivers.modules.msftocs import management as msftocs_management
-from ironic.drivers.modules.msftocs import power as msftocs_power
 from ironic.drivers.modules.oneview import common as oneview_common
 from ironic.drivers.modules.oneview import management as oneview_management
 from ironic.drivers.modules.oneview import power as oneview_power
 from ironic.drivers.modules import pxe
-from ironic.drivers.modules import seamicro
 from ironic.drivers.modules import snmp
 from ironic.drivers.modules import ssh
 from ironic.drivers.modules.ucs import management as ucs_mgmt
 from ironic.drivers.modules.ucs import power as ucs_power
-from ironic.drivers.modules import virtualbox
 from ironic.drivers import utils
 
 
@@ -76,6 +71,14 @@ class FakeDriver(base.BaseDriver):
         self.management = fake.FakeManagement()
         self.inspect = fake.FakeInspect()
         self.raid = fake.FakeRAID()
+
+
+class FakeSoftPowerDriver(FakeDriver):
+    """Example implementation of a Driver."""
+
+    def __init__(self):
+        super(FakeSoftPowerDriver, self).__init__()
+        self.power = fake.FakeSoftPower()
 
 
 class FakeIPMIToolDriver(base.BaseDriver):
@@ -119,40 +122,6 @@ class FakeSSHDriver(base.BaseDriver):
         self.deploy = fake.FakeDeploy()
         self.management = ssh.SSHManagement()
         self.console = ssh.ShellinaboxConsole()
-
-
-class FakeIPMINativeDriver(base.BaseDriver):
-    """Fake IPMINative driver."""
-
-    supported = False
-
-    def __init__(self):
-        if not importutils.try_import('pyghmi'):
-            raise exception.DriverLoadError(
-                driver=self.__class__.__name__,
-                reason=_("Unable to import pyghmi IPMI library"))
-        self.power = ipminative.NativeIPMIPower()
-        self.console = ipminative.NativeIPMIShellinaboxConsole()
-        self.deploy = fake.FakeDeploy()
-        self.vendor = ipminative.VendorPassthru()
-        self.management = ipminative.NativeIPMIManagement()
-
-
-class FakeSeaMicroDriver(base.BaseDriver):
-    """Fake SeaMicro driver."""
-
-    supported = False
-
-    def __init__(self):
-        if not importutils.try_import('seamicroclient'):
-            raise exception.DriverLoadError(
-                driver=self.__class__.__name__,
-                reason=_("Unable to import seamicroclient library"))
-        self.power = seamicro.Power()
-        self.deploy = fake.FakeDeploy()
-        self.management = seamicro.Management()
-        self.vendor = seamicro.VendorPassthru()
-        self.console = seamicro.ShellinaboxConsole()
 
 
 class FakeAgentDriver(base.BaseDriver):
@@ -222,21 +191,6 @@ class FakeIRMCDriver(base.BaseDriver):
         self.inspect = irmc_inspect.IRMCInspect()
 
 
-class FakeVirtualBoxDriver(base.BaseDriver):
-    """Fake VirtualBox driver."""
-
-    supported = False
-
-    def __init__(self):
-        if not importutils.try_import('pyremotevbox'):
-            raise exception.DriverLoadError(
-                driver=self.__class__.__name__,
-                reason=_("Unable to import pyremotevbox library"))
-        self.power = virtualbox.VirtualBoxPower()
-        self.deploy = fake.FakeDeploy()
-        self.management = virtualbox.VirtualBoxManagement()
-
-
 class FakeIPMIToolInspectorDriver(base.BaseDriver):
     """Fake Inspector driver."""
 
@@ -250,17 +204,6 @@ class FakeIPMIToolInspectorDriver(base.BaseDriver):
         # unconditional, as this driver is designed for testing inspector
         # integration.
         self.inspect = inspector.Inspector()
-
-
-class FakeMSFTOCSDriver(base.BaseDriver):
-    """Fake MSFT OCS driver."""
-
-    supported = False
-
-    def __init__(self):
-        self.power = msftocs_power.MSFTOCSPower()
-        self.deploy = fake.FakeDeploy()
-        self.management = msftocs_management.MSFTOCSManagement()
 
 
 class FakeUcsDriver(base.BaseDriver):

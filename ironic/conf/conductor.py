@@ -80,8 +80,19 @@ opts = [
                        'notification bus')),
     cfg.IntOpt('send_sensor_data_interval',
                default=600,
-               help=_('Seconds between conductor sending sensor data message'
-                      ' to ceilometer via the notification bus.')),
+               help=_('Seconds between conductor sending sensor data message '
+                      'to ceilometer via the notification bus.')),
+    cfg.IntOpt('send_sensor_data_workers',
+               default=4, min=1,
+               help=_('The maximum number of workers that can be started '
+                      'simultaneously for send data from sensors periodic '
+                      'task.')),
+    cfg.IntOpt('send_sensor_data_wait_timeout',
+               default=300,
+               help=_('The time in seconds to wait for send sensors data '
+                      'periodic task to be finished before allowing periodic '
+                      'call to happen again. Should be less than '
+                      'send_sensor_data_interval value.')),
     cfg.ListOpt('send_sensor_data_types',
                 default=['ALL'],
                 help=_('List of comma separated meter types which need to be'
@@ -131,6 +142,11 @@ opts = [
                       'ramdisk doing the cleaning. If the timeout is reached '
                       'the node will be put in the "clean failed" provision '
                       'state. Set to 0 to disable timeout.')),
+    cfg.IntOpt('soft_power_off_timeout',
+               default=600,
+               min=1,
+               help=_('Timeout (in seconds) of soft reboot and soft power '
+                      'off operation. This value always has to be positive.')),
 ]
 
 

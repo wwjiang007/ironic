@@ -13,6 +13,7 @@
 import datetime
 
 from ironic_lib import metrics_utils
+from oslo_utils import uuidutils
 import pecan
 from six.moves import http_client
 import wsme
@@ -21,6 +22,7 @@ from wsme import types as wtypes
 from ironic.api.controllers import base
 from ironic.api.controllers import link
 from ironic.api.controllers.v1 import collection
+from ironic.api.controllers.v1 import notification_utils as notify
 from ironic.api.controllers.v1 import port
 from ironic.api.controllers.v1 import types
 from ironic.api.controllers.v1 import utils as api_utils
@@ -28,6 +30,7 @@ from ironic.api import expose
 from ironic.common import exception
 from ironic.common.i18n import _
 from ironic.common import policy
+from ironic.common import utils as common_utils
 from ironic import objects
 
 METRICS = metrics_utils.get_metrics_logger(__name__)
@@ -236,19 +239,21 @@ class PortgroupsController(pecan.rest.RestController):
     }
 
     @pecan.expose()
-    def _lookup(self, ident, subres, *remainder):
+    def _lookup(self, ident, *remainder):
         if not api_utils.allow_portgroups():
             pecan.abort(http_client.NOT_FOUND)
         try:
             ident = types.uuid_or_name.validate(ident)
         except exception.InvalidUuidOrName as e:
             pecan.abort(http_client.BAD_REQUEST, e.args[0])
-        subcontroller = self._subcontroller_map.get(subres)
+        if not remainder:
+            return
+        subcontroller = self._subcontroller_map.get(remainder[0])
         if subcontroller:
             if api_utils.allow_portgroups_subcontrollers():
                 return subcontroller(
                     portgroup_ident=ident,
-                    node_ident=self.parent_node_ident), remainder
+                    node_ident=self.parent_node_ident), remainder[1:]
             pecan.abort(http_client.NOT_FOUND)
 
     def __init__(self, node_ident=None):
@@ -428,7 +433,8 @@ class PortgroupsController(pecan.rest.RestController):
         if not api_utils.allow_portgroups():
             raise exception.NotFound()
 
-        cdict = pecan.request.context.to_policy_values()
+        context = pecan.request.context
+        cdict = context.to_policy_values()
         policy.authorize('baremetal:portgroup:create', cdict, cdict)
 
         if self.parent_node_ident:
@@ -446,9 +452,25 @@ class PortgroupsController(pecan.rest.RestController):
             raise wsme.exc.ClientSideError(
                 error_msg, status_code=http_client.BAD_REQUEST)
 
-        new_portgroup = objects.Portgroup(pecan.request.context,
-                                          **portgroup.as_dict())
-        new_portgroup.create()
+        pg_dict = portgroup.as_dict()
+        vif = pg_dict.get('extra', {}).get('vif_port_id')
+        if vif:
+            common_utils.warn_about_deprecated_extra_vif_port_id()
+
+        # NOTE(yuriyz): UUID is mandatory for notifications payload
+        if not pg_dict.get('uuid'):
+            pg_dict['uuid'] = uuidutils.generate_uuid()
+
+        new_portgroup = objects.Portgroup(context, **pg_dict)
+
+        notify.emit_start_notification(context, new_portgroup, 'create',
+                                       node_uuid=portgroup.node_uuid)
+        with notify.handle_error_notification(context, new_portgroup, 'create',
+                                              node_uuid=portgroup.node_uuid):
+            new_portgroup.create()
+        notify.emit_end_notification(context, new_portgroup, 'create',
+                                     node_uuid=portgroup.node_uuid)
+
         # Set the HTTP Location Header
         pecan.response.location = link.build_url('portgroups',
                                                  new_portgroup.uuid)
@@ -466,7 +488,8 @@ class PortgroupsController(pecan.rest.RestController):
         if not api_utils.allow_portgroups():
             raise exception.NotFound()
 
-        cdict = pecan.request.context.to_policy_values()
+        context = pecan.request.context
+        cdict = context.to_policy_values()
         policy.authorize('baremetal:portgroup:update', cdict, cdict)
 
         if self.parent_node_ident:
@@ -514,14 +537,21 @@ class PortgroupsController(pecan.rest.RestController):
             if rpc_portgroup[field] != patch_val:
                 rpc_portgroup[field] = patch_val
 
-        rpc_node = objects.Node.get_by_id(pecan.request.context,
-                                          rpc_portgroup.node_id)
-        topic = pecan.request.rpcapi.get_topic_for(rpc_node)
+        rpc_node = objects.Node.get_by_id(context, rpc_portgroup.node_id)
 
-        new_portgroup = pecan.request.rpcapi.update_portgroup(
-            pecan.request.context, rpc_portgroup, topic)
+        notify.emit_start_notification(context, rpc_portgroup, 'update',
+                                       node_uuid=rpc_node.uuid)
+        with notify.handle_error_notification(context, rpc_portgroup, 'update',
+                                              node_uuid=rpc_node.uuid):
+            topic = pecan.request.rpcapi.get_topic_for(rpc_node)
+            new_portgroup = pecan.request.rpcapi.update_portgroup(
+                context, rpc_portgroup, topic)
 
-        return Portgroup.convert_with_links(new_portgroup)
+        api_portgroup = Portgroup.convert_with_links(new_portgroup)
+        notify.emit_end_notification(context, new_portgroup, 'update',
+                                     node_uuid=api_portgroup.node_uuid)
+
+        return api_portgroup
 
     @METRICS.timer('PortgroupsController.delete')
     @expose.expose(None, types.uuid_or_name,
@@ -534,7 +564,8 @@ class PortgroupsController(pecan.rest.RestController):
         if not api_utils.allow_portgroups():
             raise exception.NotFound()
 
-        cdict = pecan.request.context.to_policy_values()
+        context = pecan.request.context
+        cdict = context.to_policy_values()
         policy.authorize('baremetal:portgroup:delete', cdict, cdict)
 
         if self.parent_node_ident:
@@ -543,6 +574,13 @@ class PortgroupsController(pecan.rest.RestController):
         rpc_portgroup = api_utils.get_rpc_portgroup(portgroup_ident)
         rpc_node = objects.Node.get_by_id(pecan.request.context,
                                           rpc_portgroup.node_id)
-        topic = pecan.request.rpcapi.get_topic_for(rpc_node)
-        pecan.request.rpcapi.destroy_portgroup(pecan.request.context,
-                                               rpc_portgroup, topic)
+
+        notify.emit_start_notification(context, rpc_portgroup, 'delete',
+                                       node_uuid=rpc_node.uuid)
+        with notify.handle_error_notification(context, rpc_portgroup, 'delete',
+                                              node_uuid=rpc_node.uuid):
+            topic = pecan.request.rpcapi.get_topic_for(rpc_node)
+            pecan.request.rpcapi.destroy_portgroup(context, rpc_portgroup,
+                                                   topic)
+        notify.emit_end_notification(context, rpc_portgroup, 'delete',
+                                     node_uuid=rpc_node.uuid)

@@ -57,35 +57,6 @@ PROLIANTUTILS_SPEC = (
     'utils',
 )
 
-# pyghmi
-PYGHMI_SPEC = (
-    'exceptions',
-    'ipmi',
-)
-PYGHMI_EXC_SPEC = (
-    'IpmiException',
-)
-PYGHMI_IPMI_SPEC = (
-    'command',
-)
-PYGHMI_IPMICMD_SPEC = (
-    'boot_devices',
-    'Command',
-)
-
-# pyremotevbox
-PYREMOTEVBOX_SPEC = (
-    'exception',
-    'vbox',
-)
-PYREMOTEVBOX_EXC_SPEC = (
-    'PyRemoteVBoxException',
-    'VmInWrongPowerState',
-)
-PYREMOTEVBOX_VBOX_SPEC = (
-    'VirtualBoxHost',
-)
-
 # pywsman
 PYWSMAN_SPEC = (
     'Client',
@@ -113,7 +84,10 @@ SCCICLIENT_IRMC_SCCI_SPEC = (
     'POWER_OFF',
     'POWER_ON',
     'POWER_RESET',
+    'POWER_SOFT_CYCLE',
+    'POWER_SOFT_OFF',
     'MOUNT_CD',
+    'POWER_RAISE_NMI',
     'UNMOUNT_CD',
     'MOUNT_FD',
     'UNMOUNT_FD',
@@ -146,18 +120,4 @@ ONEVIEWCLIENT_STATES_SPEC = (
     'ONEVIEW_POWERING_ON',
     'ONEVIEW_RESETTING',
     'ONEVIEW_ERROR',
-)
-
-# seamicro
-SEAMICRO_SPEC = (
-    'client',
-    'exceptions',
-)
-# seamicro.client module
-SEAMICRO_CLIENT_MOD_SPEC = (
-    'Client',
-)
-SEAMICRO_EXC_SPEC = (
-    'ClientException',
-    'UnsupportedVersion',
 )

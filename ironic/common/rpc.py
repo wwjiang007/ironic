@@ -15,6 +15,7 @@
 
 from oslo_config import cfg
 import oslo_messaging as messaging
+from oslo_messaging.rpc import dispatcher
 
 from ironic.common import context as ironic_context
 from ironic.common import exception
@@ -32,24 +33,16 @@ ALLOWED_EXMODS = [
 ]
 EXTRA_EXMODS = []
 
-TRANSPORT_ALIASES = {
-    'ironic.rpc.impl_kombu': 'rabbit',
-    'ironic.rpc.impl_qpid': 'qpid',
-    'ironic.rpc.impl_zmq': 'zmq',
-}
-
 
 def init(conf):
     global TRANSPORT, NOTIFICATION_TRANSPORT
     global SENSORS_NOTIFIER, VERSIONED_NOTIFIER
     exmods = get_allowed_exmods()
     TRANSPORT = messaging.get_transport(conf,
-                                        allowed_remote_exmods=exmods,
-                                        aliases=TRANSPORT_ALIASES)
+                                        allowed_remote_exmods=exmods)
     NOTIFICATION_TRANSPORT = messaging.get_notification_transport(
         conf,
-        allowed_remote_exmods=exmods,
-        aliases=TRANSPORT_ALIASES)
+        allowed_remote_exmods=exmods)
 
     serializer = RequestContextSerializer(messaging.JsonPayloadSerializer())
     SENSORS_NOTIFIER = messaging.Notifier(NOTIFICATION_TRANSPORT,
@@ -117,7 +110,7 @@ class RequestContextSerializer(messaging.Serializer):
 
 
 def get_transport_url(url_str=None):
-    return messaging.TransportURL.parse(CONF, url_str, TRANSPORT_ALIASES)
+    return messaging.TransportURL.parse(CONF, url_str)
 
 
 def get_client(target, version_cap=None, serializer=None):
@@ -132,11 +125,13 @@ def get_client(target, version_cap=None, serializer=None):
 def get_server(target, endpoints, serializer=None):
     assert TRANSPORT is not None
     serializer = RequestContextSerializer(serializer)
+    access_policy = dispatcher.DefaultRPCAccessPolicy
     return messaging.get_rpc_server(TRANSPORT,
                                     target,
                                     endpoints,
                                     executor='eventlet',
-                                    serializer=serializer)
+                                    serializer=serializer,
+                                    access_policy=access_policy)
 
 
 def get_sensors_notifier(service=None, host=None, publisher_id=None):

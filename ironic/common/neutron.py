@@ -69,26 +69,28 @@ def get_client(token=None):
     return clientv20.Client(**params)
 
 
-def unbind_neutron_port(port_id, client=None, token=None):
+def unbind_neutron_port(port_id, client=None):
     """Unbind a neutron port
 
     Remove a neutron port's binding profile and host ID so that it returns to
     an unbound state.
 
     :param port_id: Neutron port ID.
-    :param token: Optional auth token.
     :param client: Optional a Neutron client object.
     :raises: NetworkError
     """
 
     if not client:
-        client = get_client(token)
+        client = get_client()
 
     body = {'port': {'binding:host_id': '',
                      'binding:profile': {}}}
 
     try:
         client.update_port(port_id, body)
+    # NOTE(vsaienko): Ignore if port was deleted before calling vif detach.
+    except neutron_exceptions.PortNotFoundClient:
+        LOG.info('Port %s was not found while unbinding.', port_id)
     except neutron_exceptions.NeutronClientException as e:
         msg = (_('Unable to clear binding profile for '
                  'neutron port %(port_id)s. Error: '
@@ -97,15 +99,14 @@ def unbind_neutron_port(port_id, client=None, token=None):
         raise exception.NetworkError(msg)
 
 
-def update_port_address(port_id, address, token=None):
+def update_port_address(port_id, address):
     """Update a port's mac address.
 
     :param port_id: Neutron port id.
     :param address: new MAC address.
-    :param token: optional auth token.
     :raises: FailedToUpdateMacOnPort
     """
-    client = get_client(token)
+    client = get_client()
     port_req_body = {'port': {'mac_address': address}}
 
     try:
@@ -162,8 +163,7 @@ def _verify_security_groups(security_groups, client):
         raise exception.NetworkError(msg)
 
 
-def add_ports_to_network(task, network_uuid, is_flat=False,
-                         security_groups=None):
+def add_ports_to_network(task, network_uuid, security_groups=None):
     """Create neutron ports to boot the ramdisk.
 
     Create neutron ports for each pxe_enabled port on task.node to boot
@@ -172,13 +172,12 @@ def add_ports_to_network(task, network_uuid, is_flat=False,
     :param task: a TaskManager instance.
     :param network_uuid: UUID of a neutron network where ports will be
         created.
-    :param is_flat: Indicates whether it is a flat network or not.
     :param security_groups: List of Security Groups UUIDs to be used for
         network.
     :raises: NetworkError
     :returns: a dictionary in the form {port.uuid: neutron_port['id']}
     """
-    client = get_client(task.context.auth_token)
+    client = get_client()
     node = task.node
 
     # If Security Groups are specified, verify that they exist
@@ -199,7 +198,7 @@ def add_ports_to_network(task, network_uuid, is_flat=False,
     if security_groups:
         body['port']['security_groups'] = security_groups
 
-    if not is_flat:
+    if node.network_interface != 'flat':
         # NOTE(vdrok): It seems that change
         # I437290affd8eb87177d0626bf7935a165859cbdd to neutron broke the
         # possibility to always bind port. Set binding:host_id only in
@@ -216,6 +215,10 @@ def add_ports_to_network(task, network_uuid, is_flat=False,
     portmap = get_node_portmap(task)
     pxe_enabled_ports = [p for p in task.ports if p.pxe_enabled]
     for ironic_port in pxe_enabled_ports:
+        # Skip ports that are missing required information for deploy.
+        if not validate_port_info(node, ironic_port):
+            failures.append(ironic_port.uuid)
+            continue
         body['port']['mac_address'] = ironic_port.address
         binding_profile = {'local_link_information':
                            [portmap[ironic_port.uuid]]}
@@ -283,7 +286,7 @@ def remove_neutron_ports(task, params):
     :param params: Dict of params to filter ports.
     :raises: NetworkError
     """
-    client = get_client(task.context.auth_token)
+    client = get_client()
     node_uuid = task.node.uuid
 
     try:
@@ -392,6 +395,27 @@ def validate_network(uuid_or_name, net_type=_('network')):
              'type': net_type})
 
     return networks[0]
+
+
+def validate_port_info(node, port):
+    """Check that port contains enough information for deploy.
+
+    Neutron network interface requires that local_link_information field is
+    filled before we can use this port.
+
+    :param node: Ironic node object.
+    :param port: Ironic port object.
+    :returns: True if port info is valid, False otherwise.
+    """
+    if (node.network_interface == 'neutron' and
+            not port.local_link_connection):
+        LOG.warning(_LW("The local_link_connection is required for "
+                        "'neutron' network interface and is not present "
+                        "in the nodes %(node)s port %(port)s"),
+                    {'node': node.uuid, 'port': port.uuid})
+        return False
+
+    return True
 
 
 class NeutronNetworkInterfaceMixin(object):

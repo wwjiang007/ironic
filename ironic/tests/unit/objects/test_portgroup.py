@@ -11,6 +11,7 @@
 #    under the License.
 
 import datetime
+
 import mock
 from testtools import matchers
 
@@ -18,9 +19,10 @@ from ironic.common import exception
 from ironic import objects
 from ironic.tests.unit.db import base
 from ironic.tests.unit.db import utils
+from ironic.tests.unit.objects import utils as obj_utils
 
 
-class TestPortgroupObject(base.DbTestCase):
+class TestPortgroupObject(base.DbTestCase, obj_utils.SchemasTestMixIn):
 
     def setUp(self):
         super(TestPortgroupObject, self).setUp()
@@ -114,6 +116,20 @@ class TestPortgroupObject(base.DbTestCase):
             self.assertEqual(expected, mock_get_portgroup.call_args_list)
             self.assertEqual(self.context, p._context)
 
+    def test_save_after_refresh(self):
+        # Ensure that it's possible to do object.save() after object.refresh()
+        address = "b2:54:00:cf:2d:40"
+        db_node = utils.create_test_node()
+        db_portgroup = utils.create_test_portgroup(node_id=db_node.id)
+        p = objects.Portgroup.get_by_uuid(self.context, db_portgroup.uuid)
+        p_copy = objects.Portgroup.get_by_uuid(self.context, db_portgroup.uuid)
+        p.address = address
+        p.save()
+        p_copy.refresh()
+        p_copy.address = 'aa:bb:cc:dd:ee:ff'
+        # Ensure this passes and an exception is not generated
+        p_copy.save()
+
     def test_list(self):
         with mock.patch.object(self.dbapi, 'get_portgroup_list',
                                autospec=True) as mock_get_list:
@@ -133,3 +149,7 @@ class TestPortgroupObject(base.DbTestCase):
             self.assertThat(portgroups, matchers.HasLength(1))
             self.assertIsInstance(portgroups[0], objects.Portgroup)
             self.assertEqual(self.context, portgroups[0]._context)
+
+    def test_payload_schemas(self):
+        self._check_payload_schemas(objects.portgroup,
+                                    objects.Portgroup.fields)

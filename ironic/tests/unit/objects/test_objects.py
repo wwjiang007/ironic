@@ -14,9 +14,8 @@
 
 import contextlib
 import datetime
-import gettext
-import iso8601
 
+import iso8601
 import mock
 from oslo_versionedobjects import base as object_base
 from oslo_versionedobjects import exception as object_exception
@@ -24,11 +23,11 @@ from oslo_versionedobjects import fixture as object_fixture
 import six
 
 from ironic.common import context
+from ironic.common import release_mappings
+from ironic.conf import CONF
 from ironic.objects import base
 from ironic.objects import fields
 from ironic.tests import base as test_base
-
-gettext.install('ironic')
 
 
 @base.IronicObjectRegistry.register
@@ -39,6 +38,11 @@ class MyObj(base.IronicObject, object_base.VersionedObjectDictCompat):
               'bar': fields.StringField(),
               'missing': fields.StringField(),
               }
+
+    def obj_make_compatible(self, primitive, target_version):
+        super(MyObj, self).obj_make_compatible(primitive, target_version)
+        if target_version == '1.4' and 'missing' in primitive:
+            del primitive['missing']
 
     def obj_load_attr(self, attrname):
         setattr(self, attrname, 'loaded!')
@@ -409,29 +413,30 @@ expected_object_fingerprints = {
     'Chassis': '1.3-d656e039fd8ae9f34efc232ab3980905',
     'Port': '1.6-609504503d68982a10f495659990084b',
     'Portgroup': '1.3-71923a81a86743b313b190f5c675e258',
-    'Conductor': '1.1-5091f249719d4a465062a1b3dc7f860d',
+    'Conductor': '1.2-5091f249719d4a465062a1b3dc7f860d',
     'EventType': '1.1-aa2ba1afd38553e3880c267404e8d370',
     'NotificationPublisher': '1.0-51a09397d6c0687771fb5be9a999605d',
-    'NodePayload': '1.2-f4e7a1def3b2a5784863eeed46e3a25f',
+    'NodePayload': '1.3-e54d6506953ad0aa0b965615b0aa38a0',
     'NodeSetPowerStateNotification': '1.0-59acc533c11d306f149846f922739c15',
-    'NodeSetPowerStatePayload': '1.2-06b6daec792fdef69c672ab5899c6a07',
-    'NodeCorrectedPowerStateNotification': '1.0-59acc533c11d306f149846f922739'
-                                           'c15',
-    'NodeCorrectedPowerStatePayload': '1.2-ef6515d2f20944f4ed3d3e06a6476396',
+    'NodeSetPowerStatePayload': '1.3-c9657ea90d565993219bdc34e7a64231',
+    'NodeCorrectedPowerStateNotification':
+        '1.0-59acc533c11d306f149846f922739c15',
+    'NodeCorrectedPowerStatePayload': '1.3-db79d69db4212e3eaf51a8b50c1d171e',
     'NodeSetProvisionStateNotification':
         '1.0-59acc533c11d306f149846f922739c15',
-    'NodeSetProvisionStatePayload': '1.2-2695d18d1eccbb0f5d3bbcb0575630dc',
+    'NodeSetProvisionStatePayload': '1.3-96e85e927b10d96c79c27f5fb6727f86',
     'VolumeConnector': '1.0-3e0252c0ab6e6b9d158d09238a577d97',
     'VolumeTarget': '1.0-0b10d663d8dae675900b2c7548f76f5e',
     'ChassisCRUDNotification': '1.0-59acc533c11d306f149846f922739c15',
     'ChassisCRUDPayload': '1.0-dce63895d8186279a7dd577cffccb202',
     'NodeCRUDNotification': '1.0-59acc533c11d306f149846f922739c15',
-    'NodeCRUDPayload': '1.0-37bb4cdd2c84b59fd6ad0547dbf713a0',
+    'NodeCRUDPayload': '1.1-35c16dd49d75812763e4e99bfebc3191',
     'PortCRUDNotification': '1.0-59acc533c11d306f149846f922739c15',
-
-    'PortCRUDPayload': '1.0-88acd98c9b08b4c8810e77793152057b',
+    'PortCRUDPayload': '1.1-1ecf2d63b68014c52cb52d0227f8b5b8',
     'NodeMaintenanceNotification': '1.0-59acc533c11d306f149846f922739c15',
-    'NodeConsoleNotification': '1.0-59acc533c11d306f149846f922739c15'
+    'NodeConsoleNotification': '1.0-59acc533c11d306f149846f922739c15',
+    'PortgroupCRUDNotification': '1.0-59acc533c11d306f149846f922739c15',
+    'PortgroupCRUDPayload': '1.0-b73c1fecf0cef3aa56bbe3c7e2275018',
 }
 
 
@@ -519,6 +524,90 @@ class TestObjectSerializer(test_base.TestCase):
     def test_deserialize_entity_newer_version_passes_revision(self):
         "Test object with unsupported (newer) version and revision"
         self._test_deserialize_entity_newer('1.7', '1.6.1', my_version='1.6.1')
+
+    @mock.patch.object(MyObj, 'obj_make_compatible')
+    def test_serialize_entity_no_backport(self, make_compatible_mock):
+        """Test single element serializer with no backport."""
+        serializer = base.IronicObjectSerializer()
+        obj = MyObj(self.context)
+        obj.foo = 1
+        obj.bar = 'text'
+        obj.missing = 'textt'
+        primitive = serializer.serialize_entity(self.context, obj)
+        self.assertEqual('1.5', primitive['ironic_object.version'])
+        data = primitive['ironic_object.data']
+        self.assertEqual(1, data['foo'])
+        self.assertEqual('text', data['bar'])
+        self.assertEqual('textt', data['missing'])
+        changes = primitive['ironic_object.changes']
+        self.assertEqual(set(['foo', 'bar', 'missing']), set(changes))
+        make_compatible_mock.assert_not_called()
+
+    @mock.patch('ironic.common.release_mappings.RELEASE_MAPPING')
+    def test_serialize_entity_backport(self, mock_release_mapping):
+        """Test single element serializer with backport."""
+        CONF.set_override('pin_release_version',
+                          release_mappings.RELEASE_VERSIONS[-1],
+                          enforce_type=True)
+        mock_release_mapping.__getitem__.return_value = {
+            'objects': {
+                'MyObj': '1.4',
+            }
+        }
+        serializer = base.IronicObjectSerializer()
+        obj = MyObj(self.context)
+        obj.foo = 1
+        obj.bar = 'text'
+        obj.missing = 'textt'
+        primitive = serializer.serialize_entity(self.context, obj)
+        self.assertEqual('1.4', primitive['ironic_object.version'])
+        data = primitive['ironic_object.data']
+        self.assertEqual(1, data['foo'])
+        self.assertEqual('text', data['bar'])
+        self.assertNotIn('missing', data)
+        changes = primitive['ironic_object.changes']
+        self.assertEqual(set(['foo', 'bar']), set(changes))
+
+    @mock.patch('ironic.common.release_mappings.RELEASE_MAPPING')
+    def test_serialize_entity_invalid_pin(self, mock_release_mapping):
+        CONF.set_override('pin_release_version',
+                          release_mappings.RELEASE_VERSIONS[-1],
+                          enforce_type=True)
+        mock_release_mapping.__getitem__.return_value = {
+            'objects': {
+                'MyObj': '1.6',
+            }
+        }
+        serializer = base.IronicObjectSerializer()
+        obj = MyObj(self.context)
+        self.assertRaises(object_exception.InvalidTargetVersion,
+                          serializer.serialize_entity, self.context, obj)
+
+    @mock.patch('ironic.common.release_mappings.RELEASE_MAPPING')
+    def test_serialize_entity_no_pin(self, mock_release_mapping):
+        CONF.set_override('pin_release_version',
+                          release_mappings.RELEASE_VERSIONS[-1],
+                          enforce_type=True)
+        mock_release_mapping.__getitem__.return_value = {
+            'objects': {}
+        }
+        serializer = base.IronicObjectSerializer()
+        obj = MyObj(self.context)
+        primitive = serializer.serialize_entity(self.context, obj)
+        self.assertEqual('1.5', primitive['ironic_object.version'])
+
+    @mock.patch('ironic.objects.base.IronicObject._get_target_version')
+    @mock.patch('ironic.objects.base.LOG.warning')
+    def test_serialize_entity_unknown_entity(self, mock_warn, mock_version):
+        class Foo(object):
+            fields = {'foobar': fields.IntegerField()}
+
+        serializer = base.IronicObjectSerializer()
+        obj = Foo()
+        primitive = serializer.serialize_entity(self.context, obj)
+        self.assertEqual(obj, primitive)
+        self.assertTrue(mock_warn.called)
+        mock_version.assert_not_called()
 
 
 class TestRegistry(test_base.TestCase):

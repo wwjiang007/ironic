@@ -34,6 +34,7 @@ from ironic.api.controllers.v1 import port as api_port
 from ironic.api.controllers.v1 import utils as api_utils
 from ironic.api.controllers.v1 import versions
 from ironic.common import exception
+from ironic.common import utils as common_utils
 from ironic.conductor import rpcapi
 from ironic import objects
 from ironic.objects import fields as obj_fields
@@ -488,11 +489,13 @@ class TestPatch(test_api_base.BaseApiTest):
         mock_notify.assert_has_calls([mock.call(mock.ANY, mock.ANY, 'update',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.START,
-                                      node_uuid=self.node.uuid),
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=wtypes.Unset),
                                       mock.call(mock.ANY, mock.ANY, 'update',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.END,
-                                      node_uuid=self.node.uuid)])
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=wtypes.Unset)])
 
     def test_update_byaddress_not_allowed(self, mock_upd):
         extra = {'foo': 'bar'}
@@ -555,11 +558,13 @@ class TestPatch(test_api_base.BaseApiTest):
         mock_notify.assert_has_calls([mock.call(mock.ANY, mock.ANY, 'update',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.START,
-                                      node_uuid=self.node.uuid),
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=wtypes.Unset),
                                       mock.call(mock.ANY, mock.ANY, 'update',
                                       obj_fields.NotificationLevel.ERROR,
                                       obj_fields.NotificationStatus.ERROR,
-                                      node_uuid=self.node.uuid)])
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=wtypes.Unset)])
 
     def test_replace_node_uuid(self, mock_upd):
         mock_upd.return_value = self.port
@@ -956,9 +961,11 @@ class TestPost(test_api_base.BaseApiTest):
         self.headers = {api_base.Version.string: str(
             versions.MAX_VERSION_STRING)}
 
+    @mock.patch.object(common_utils, 'warn_about_deprecated_extra_vif_port_id',
+                       autospec=True)
     @mock.patch.object(notification_utils, '_emit_api_notification')
     @mock.patch.object(timeutils, 'utcnow')
-    def test_create_port(self, mock_utcnow, mock_notify):
+    def test_create_port(self, mock_utcnow, mock_notify, mock_warn):
         pdict = post_get_test_port()
         test_time = datetime.datetime(2000, 1, 1, 0, 0)
         mock_utcnow.return_value = test_time
@@ -979,11 +986,14 @@ class TestPost(test_api_base.BaseApiTest):
         mock_notify.assert_has_calls([mock.call(mock.ANY, mock.ANY, 'create',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.START,
-                                      node_uuid=self.node.uuid),
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=self.portgroup.uuid),
                                       mock.call(mock.ANY, mock.ANY, 'create',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.END,
-                                      node_uuid=self.node.uuid)])
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=self.portgroup.uuid)])
+        self.assertEqual(0, mock_warn.call_count)
 
     def test_create_port_min_api_version(self):
         pdict = post_get_test_port(
@@ -1032,11 +1042,13 @@ class TestPost(test_api_base.BaseApiTest):
         mock_notify.assert_has_calls([mock.call(mock.ANY, mock.ANY, 'create',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.START,
-                                      node_uuid=self.node.uuid),
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=self.portgroup.uuid),
                                       mock.call(mock.ANY, mock.ANY, 'create',
                                       obj_fields.NotificationLevel.ERROR,
                                       obj_fields.NotificationStatus.ERROR,
-                                      node_uuid=self.node.uuid)])
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=self.portgroup.uuid)])
 
     def test_create_port_valid_extra(self):
         pdict = post_get_test_port(extra={'str': 'foo', 'int': 123,
@@ -1256,6 +1268,16 @@ class TestPost(test_api_base.BaseApiTest):
         self.assertEqual('application/json', response.content_type)
         self.assertEqual(http_client.FORBIDDEN, response.status_int)
 
+    @mock.patch.object(common_utils, 'warn_about_deprecated_extra_vif_port_id',
+                       autospec=True)
+    def test_create_port_with_extra_vif_port_id_deprecated(self, mock_warn):
+        pdict = post_get_test_port(pxe_enabled=False,
+                                   extra={'vif_port_id': 'foo'})
+        response = self.post_json('/ports', pdict, headers=self.headers)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.CREATED, response.status_int)
+        self.assertEqual(1, mock_warn.call_count)
+
     def _test_create_port(self, has_vif=False, in_portgroup=False,
                           pxe_enabled=True, standalone_ports=True,
                           http_status=http_client.CREATED):
@@ -1382,11 +1404,13 @@ class TestDelete(test_api_base.BaseApiTest):
         mock_notify.assert_has_calls([mock.call(mock.ANY, mock.ANY, 'delete',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.START,
-                                      node_uuid=self.node.uuid),
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=None),
                                       mock.call(mock.ANY, mock.ANY, 'delete',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.END,
-                                      node_uuid=self.node.uuid)])
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=None)])
 
     @mock.patch.object(notification_utils, '_emit_api_notification')
     def test_delete_port_node_locked(self, mock_notify, mock_dpt):
@@ -1400,11 +1424,13 @@ class TestDelete(test_api_base.BaseApiTest):
         mock_notify.assert_has_calls([mock.call(mock.ANY, mock.ANY, 'delete',
                                       obj_fields.NotificationLevel.INFO,
                                       obj_fields.NotificationStatus.START,
-                                      node_uuid=self.node.uuid),
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=None),
                                       mock.call(mock.ANY, mock.ANY, 'delete',
                                       obj_fields.NotificationLevel.ERROR,
                                       obj_fields.NotificationStatus.ERROR,
-                                      node_uuid=self.node.uuid)])
+                                      node_uuid=self.node.uuid,
+                                      portgroup_uuid=None)])
 
     def test_portgroups_subresource_delete(self, mock_dpt):
         portgroup = obj_utils.create_test_portgroup(self.context,

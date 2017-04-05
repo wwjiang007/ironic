@@ -27,7 +27,9 @@ class Conductor(base.IronicObject, object_base.VersionedObjectDictCompat):
     # Version 1.0: Initial version
     # Version 1.1: Add register() and unregister(), make the context parameter
     #              to touch() optional.
-    VERSION = '1.1'
+    # Version 1.2: Add register_hardware_interfaces() and
+    #              unregister_all_hardware_interfaces()
+    VERSION = '1.2'
 
     dbapi = db_api.get_instance()
 
@@ -49,7 +51,7 @@ class Conductor(base.IronicObject, object_base.VersionedObjectDictCompat):
         :returns: a :class:`Conductor` object.
         """
         db_obj = cls.dbapi.get_conductor(hostname)
-        conductor = Conductor._from_db_object(cls(context), db_obj)
+        conductor = cls._from_db_object(cls(context), db_obj)
         return conductor
 
     def save(self, context):
@@ -75,8 +77,7 @@ class Conductor(base.IronicObject, object_base.VersionedObjectDictCompat):
                         A context should be set when instantiating the
                         object, e.g.: Conductor(context)
         """
-        current = self.__class__.get_by_hostname(self._context,
-                                                 hostname=self.hostname)
+        current = self.get_by_hostname(self._context, hostname=self.hostname)
         self.obj_refresh(current)
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -108,7 +109,7 @@ class Conductor(base.IronicObject, object_base.VersionedObjectDictCompat):
         db_cond = cls.dbapi.register_conductor({'hostname': hostname,
                                                 'drivers': drivers},
                                                update_existing=update_existing)
-        return Conductor._from_db_object(cls(context), db_cond)
+        return cls._from_db_object(cls(context), db_cond)
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
     # methods can be used in the future to replace current explicit RPC calls.
@@ -116,4 +117,25 @@ class Conductor(base.IronicObject, object_base.VersionedObjectDictCompat):
     # @object_base.remotable
     def unregister(self, context=None):
         """Remove this conductor from the service registry."""
+        self.unregister_all_hardware_interfaces()
         self.dbapi.unregister_conductor(self.hostname)
+
+    def register_hardware_interfaces(self, hardware_type, interface_type,
+                                     interfaces, default_interface):
+        """Register hardware interfaces with the conductor.
+
+        :param hardware_type: Name of hardware type for the interfaces.
+        :param interface_type: Type of interfaces, e.g. 'deploy' or 'boot'.
+        :param interfaces: List of interface names to register.
+        :param default_interface: String, the default interface for this
+                                  hardware type and interface type.
+        """
+        self.dbapi.register_conductor_hardware_interfaces(self.id,
+                                                          hardware_type,
+                                                          interface_type,
+                                                          interfaces,
+                                                          default_interface)
+
+    def unregister_all_hardware_interfaces(self):
+        """Unregister all hardware interfaces for this conductor."""
+        self.dbapi.unregister_conductor_hardware_interfaces(self.id)

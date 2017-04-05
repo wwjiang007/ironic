@@ -155,14 +155,31 @@ def login_iscsi(portal_address, portal_port, target_iqn):
                   check_exit_code=[0],
                   attempts=5,
                   delay_on_retry=True)
-    # Ensure the login complete
-    verify_iscsi_connection(target_iqn)
-    # force iSCSI initiator to re-read luns
-    force_iscsi_lun_update(target_iqn)
-    # ensure file system sees the block device
-    check_file_system_for_iscsi_device(portal_address,
-                                       portal_port,
-                                       target_iqn)
+
+    error_occurred = False
+    try:
+        # Ensure the login complete
+        verify_iscsi_connection(target_iqn)
+        # force iSCSI initiator to re-read luns
+        force_iscsi_lun_update(target_iqn)
+        # ensure file system sees the block device
+        check_file_system_for_iscsi_device(portal_address,
+                                           portal_port,
+                                           target_iqn)
+    except (exception.InstanceDeployFailure,
+            processutils.ProcessExecutionError) as e:
+        with excutils.save_and_reraise_exception():
+            error_occurred = True
+            LOG.error(_LE("Failed to login to an iSCSI target due to %s"),
+                      e)
+    finally:
+        if error_occurred:
+            try:
+                logout_iscsi(portal_address, portal_port, target_iqn)
+                delete_iscsi(portal_address, portal_port, target_iqn)
+            except processutils.ProcessExecutionError as e:
+                LOG.warning(_LW("An error occurred when trying to cleanup "
+                                "failed ISCSI session error %s"), e)
 
 
 def check_file_system_for_iscsi_device(portal_address,
@@ -219,7 +236,6 @@ def verify_iscsi_connection(target_iqn):
 def force_iscsi_lun_update(target_iqn):
     """force iSCSI initiator to re-read luns."""
     LOG.debug("Re-reading iSCSI luns.")
-
     utils.execute('iscsiadm',
                   '-m', 'node',
                   '-T', target_iqn,
@@ -1160,6 +1176,23 @@ def build_instance_info_for_deploy(task):
     :raises: exception.ImageRefValidationFailed if image_source is not
         Glance href and is not HTTP(S) URL.
     """
+    def validate_image_url(url, secret=False):
+        """Validates image URL through the HEAD request.
+
+        :param url: URL to be validated
+        :param secret: if URL is secret (e.g. swift temp url),
+            it will not be shown in logs.
+        """
+        try:
+            image_service.HttpImageService().validate_href(url, secret)
+        except exception.ImageRefValidationFailed as e:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_LE("Agent deploy supports only HTTP(S) URLs as "
+                              "instance_info['image_source'] or swift "
+                              "temporary URL. Either the specified URL is not "
+                              "a valid HTTP(S) URL or is not reachable "
+                              "for node %(node)s. Error: %(msg)s"),
+                          {'node': node.uuid, 'msg': e})
     node = task.node
     instance_info = node.instance_info
     iwdi = node.driver_internal_info.get('is_whole_disk_image')
@@ -1168,9 +1201,10 @@ def build_instance_info_for_deploy(task):
         glance = image_service.GlanceImageService(version=2,
                                                   context=task.context)
         image_info = glance.show(image_source)
-        swift_temp_url = glance.swift_temp_url(image_info)
         LOG.debug('Got image info: %(info)s for node %(node)s.',
                   {'info': image_info, 'node': node.uuid})
+        swift_temp_url = glance.swift_temp_url(image_info)
+        validate_image_url(swift_temp_url, secret=True)
         instance_info['image_url'] = swift_temp_url
         instance_info['image_checksum'] = image_info['checksum']
         instance_info['image_disk_format'] = image_info['disk_format']
@@ -1183,14 +1217,7 @@ def build_instance_info_for_deploy(task):
             instance_info['kernel'] = image_info['properties']['kernel_id']
             instance_info['ramdisk'] = image_info['properties']['ramdisk_id']
     else:
-        try:
-            image_service.HttpImageService().validate_href(image_source)
-        except exception.ImageRefValidationFailed:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Agent deploy supports only HTTP(S) URLs as "
-                              "instance_info['image_source']. Either %s "
-                              "is not a valid HTTP(S) URL or "
-                              "is not reachable."), image_source)
+        validate_image_url(image_source)
         instance_info['image_url'] = image_source
 
     if not iwdi:

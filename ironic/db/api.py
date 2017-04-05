@@ -531,10 +531,64 @@ class Connection(object):
         """
 
     @abc.abstractmethod
+    def get_active_hardware_type_dict(self):
+        """Retrieve hardware types for the registered and active conductors.
+
+        :returns: A dict which maps hardware type names to the set of hosts
+                  which support them. For example:
+
+                  ::
+
+                    {hardware-type-a: set([host1, host2]),
+                     hardware-type-b: set([host2, host3])}
+        """
+
+    @abc.abstractmethod
     def get_offline_conductors(self):
         """Get a list conductor hostnames that are offline (dead).
 
         :returns: A list of conductor hostnames.
+        """
+
+    @abc.abstractmethod
+    def list_conductor_hardware_interfaces(self, conductor_id):
+        """List all registered hardware interfaces for a conductor.
+
+        :param conductor_id: Database ID of conductor.
+        :returns: List of ``ConductorHardwareInterfaces`` objects.
+        """
+
+    @abc.abstractmethod
+    def list_hardware_type_interfaces(self, hardware_types):
+        """List registered hardware interfaces for given hardware types.
+
+        This is restricted to only active conductors.
+        :param hardware_types: list of hardware types to filter by.
+        :returns: list of ``ConductorHardwareInterfaces`` objects.
+        """
+
+    @abc.abstractmethod
+    def register_conductor_hardware_interfaces(self, conductor_id,
+                                               hardware_type, interface_type,
+                                               interfaces, default_interface):
+        """Registers hardware interfaces for a conductor.
+
+        :param conductor_id: Database ID of conductor to register for.
+        :param hardware_type: Name of hardware type for the interfaces.
+        :param interface_type: Type of interfaces, e.g. 'deploy' or 'boot'.
+        :param interfaces: List of interface names to register.
+        :param default_interface: String, the default interface for this
+                                  hardware type and interface type.
+        :raises: ConductorHardwareInterfacesAlreadyRegistered if at least one
+                 of the interfaces in the combination of all parameters is
+                 already registered.
+        """
+
+    @abc.abstractmethod
+    def unregister_conductor_hardware_interfaces(self, conductor_id):
+        """Unregisters all hardware interfaces for a conductor.
+
+        :param conductor_id: Database ID of conductor to unregister for.
         """
 
     @abc.abstractmethod

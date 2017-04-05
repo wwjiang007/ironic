@@ -14,15 +14,34 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import time
+
 from tempest.common import waiters
 from tempest import config
+from tempest.lib.common import api_version_utils
 from tempest.lib import exceptions as lib_exc
-from tempest.scenario import manager  # noqa
-import tempest.test
 
 from ironic_tempest_plugin import clients
+from ironic_tempest_plugin.common import utils
+from ironic_tempest_plugin.common import waiters as ironic_waiters
+from ironic_tempest_plugin import manager
 
 CONF = config.CONF
+
+
+def retry_on_conflict(func):
+    def inner(*args, **kwargs):
+        # TODO(vsaienko): make number of retries and delay between
+        # them configurable in future.
+        e = None
+        for att in range(10):
+            try:
+                return func(*args, **kwargs)
+            except lib_exc.Conflict as e:
+                time.sleep(1)
+        raise lib_exc.Conflict(e)
+
+    return inner
 
 
 # power/provision states as of icehouse
@@ -49,17 +68,26 @@ class BaremetalProvisionStates(object):
     DELETING = 'deleting'
     DELETED = 'deleted'
     ERROR = 'error'
+    MANAGEABLE = 'manageable'
 
 
 class BaremetalScenarioTest(manager.ScenarioTest):
 
     credentials = ['primary', 'admin']
+    min_microversion = None
+    max_microversion = api_version_utils.LATEST_MICROVERSION
 
     @classmethod
     def skip_checks(cls):
         super(BaremetalScenarioTest, cls).skip_checks()
         if not CONF.service_available.ironic:
             raise cls.skipException('Ironic is not enabled.')
+        cfg_min_version = CONF.baremetal.min_microversion
+        cfg_max_version = CONF.baremetal.max_microversion
+        api_version_utils.check_skip_with_microversion(cls.min_microversion,
+                                                       cls.max_microversion,
+                                                       cfg_min_version,
+                                                       cfg_max_version)
 
     @classmethod
     def setup_clients(cls):
@@ -73,58 +101,26 @@ class BaremetalScenarioTest(manager.ScenarioTest):
         # allow any issues obtaining the node list to raise early
         cls.baremetal_client.list_nodes()
 
-    def _node_state_timeout(self, node_id, state_attr,
-                            target_states, timeout=10, interval=1):
-        if not isinstance(target_states, list):
-            target_states = [target_states]
+    @classmethod
+    def wait_provisioning_state(cls, node_id, state, timeout=10, interval=1):
+        ironic_waiters.wait_for_bm_node_status(
+            cls.baremetal_client, node_id=node_id, attr='provision_state',
+            status=state, timeout=timeout, interval=interval)
 
-        def check_state():
-            node = self.get_node(node_id=node_id)
-            if node.get(state_attr) in target_states:
-                return True
-            return False
-
-        if not tempest.test.call_until_true(check_state, timeout, interval):
-            msg = ("Timed out waiting for node %s to reach %s state(s) %s" %
-                   (node_id, state_attr, target_states))
-            raise lib_exc.TimeoutException(msg)
-
-    def wait_provisioning_state(self, node_id, state, timeout, interval=1):
-        self._node_state_timeout(
-            node_id=node_id, state_attr='provision_state',
-            target_states=state, timeout=timeout, interval=interval)
-
-    def wait_power_state(self, node_id, state):
-        self._node_state_timeout(
-            node_id=node_id, state_attr='power_state',
-            target_states=state, timeout=CONF.baremetal.power_timeout)
+    @classmethod
+    def wait_power_state(cls, node_id, state):
+        ironic_waiters.wait_for_bm_node_status(
+            cls.baremetal_client, node_id=node_id, attr='power_state',
+            status=state, timeout=CONF.baremetal.power_timeout)
 
     def wait_node(self, instance_id):
         """Waits for a node to be associated with instance_id."""
+        ironic_waiters.wait_node_instance_association(self.baremetal_client,
+                                                      instance_id)
 
-        def _get_node():
-            node = None
-            try:
-                node = self.get_node(instance_id=instance_id)
-            except lib_exc.NotFound:
-                pass
-            return node is not None
-
-        if (not tempest.test.call_until_true(
-            _get_node, CONF.baremetal.association_timeout, 1)):
-            msg = ('Timed out waiting to get Ironic node by instance id %s'
-                   % instance_id)
-            raise lib_exc.TimeoutException(msg)
-
-    def get_node(self, node_id=None, instance_id=None):
-        if node_id:
-            _, body = self.baremetal_client.show_node(node_id)
-            return body
-        elif instance_id:
-            _, body = self.baremetal_client.show_node_by_instance_uuid(
-                instance_id)
-            if body['nodes']:
-                return body['nodes'][0]
+    @classmethod
+    def get_node(cls, node_id=None, instance_id=None):
+        return utils.get_node(cls.baremetal_client, node_id, instance_id)
 
     def get_ports(self, node_uuid):
         ports = []
@@ -134,8 +130,32 @@ class BaremetalScenarioTest(manager.ScenarioTest):
             ports.append(p)
         return ports
 
+    def get_node_vifs(self, node_uuid, api_version='1.28'):
+        _, body = self.baremetal_client.vif_list(node_uuid,
+                                                 api_version=api_version)
+        return body['vifs']
+
     def add_keypair(self):
         self.keypair = self.create_keypair()
+
+    @classmethod
+    @retry_on_conflict
+    def update_node_driver(cls, node_id, driver):
+        _, body = cls.baremetal_client.update_node(
+            node_id, driver=driver)
+        return body
+
+    @classmethod
+    @retry_on_conflict
+    def update_node(cls, node_id, patch):
+        cls.baremetal_client.update_node(node_id, patch=patch)
+
+    @classmethod
+    @retry_on_conflict
+    def set_node_provision_state(cls, node_id, state, configdrive=None,
+                                 clean_steps=None):
+        cls.baremetal_client.set_node_provision_state(
+            node_id, state, configdrive=configdrive, clean_steps=clean_steps)
 
     def verify_connectivity(self, ip=None):
         if ip:

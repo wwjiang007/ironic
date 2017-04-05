@@ -25,15 +25,17 @@ from oslo_config import cfg
 from oslo_utils import netutils
 
 from ironic.common.i18n import _
+from ironic.common import release_mappings as versions
 
-
-# TODO(dtantsur): remove the variants with warnings as soon as we support
-# actually creating nodes with hardware types.
 
 _ENABLED_IFACE_HELP = _('Specify the list of {0} interfaces to load during '
                         'service initialization. Missing {0} interfaces, '
                         'or {0} interfaces which fail to initialize, will '
                         'prevent the ironic-conductor service from starting. '
+                        'At least one {0} interface that is supported by each '
+                        'enabled hardware type must be enabled here, or the '
+                        'ironic-conductor service will not start. '
+                        'Must not be an empty list. '
                         'The default value is a recommended set of '
                         'production-oriented {0} interfaces. A complete '
                         'list of {0} interfaces present on your system may '
@@ -44,23 +46,11 @@ _ENABLED_IFACE_HELP = _('Specify the list of {0} interfaces to load during '
                         'set of enabled {0} interfaces on every '
                         'ironic-conductor service.')
 
-_ENABLED_IFACE_HELP_WITH_WARNING = (
-    _('WARNING: This configuration option is part of the incomplete driver '
-      'composition work, changing it\'s setting has no effect. ') +
-    _ENABLED_IFACE_HELP
-)
-
 _DEFAULT_IFACE_HELP = _('Default {0} interface to be used for nodes that '
                         'do not have {0}_interface field set. A complete '
                         'list of {0} interfaces present on your system may '
                         'be found by enumerating the '
                         '"ironic.hardware.interfaces.{0}" entrypoint.')
-
-_DEFAULT_IFACE_HELP_WITH_WARNING = (
-    _('WARNING: This configuration option is part of the incomplete driver '
-      'composition work, changing it\'s setting has no effect. ') +
-    _DEFAULT_IFACE_HELP
-)
 
 api_opts = [
     cfg.StrOpt(
@@ -94,60 +84,56 @@ driver_opts = [
                        'entrypoint. An example may be found in the '
                        'developer documentation online.')),
     cfg.ListOpt('enabled_hardware_types',
-                default=[],
-                help=_('WARNING: This configuration option is part of the '
-                       'incomplete driver composition work, changing it\'s '
-                       'setting has no effect. '
-                       'Specify the list of hardware types to load during '
+                default=['ipmi'],
+                help=_('Specify the list of hardware types to load during '
                        'service initialization. Missing hardware types, or '
                        'hardware types which fail to initialize, will prevent '
-                       'the conductor service from starting. No hardware '
-                       'types are enabled by default now, but in the future '
-                       'this option will default to a recommended set of '
-                       'production-oriented hardware types. '
+                       'the conductor service from starting. This option '
+                       'defaults to a recommended set of production-oriented '
+                       'hardware types. '
                        'A complete list of hardware types present on your '
                        'system may be found by enumerating the '
                        '"ironic.hardware.types" entrypoint.')),
     cfg.ListOpt('enabled_boot_interfaces',
                 default=['pxe'],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('boot')),
+                help=_ENABLED_IFACE_HELP.format('boot')),
     cfg.StrOpt('default_boot_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('boot')),
+               help=_DEFAULT_IFACE_HELP.format('boot')),
     cfg.ListOpt('enabled_console_interfaces',
                 default=['no-console'],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('console')),
+                help=_ENABLED_IFACE_HELP.format('console')),
     cfg.StrOpt('default_console_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('console')),
+               help=_DEFAULT_IFACE_HELP.format('console')),
     cfg.ListOpt('enabled_deploy_interfaces',
                 default=['iscsi', 'direct'],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('deploy')),
+                help=_ENABLED_IFACE_HELP.format('deploy')),
     cfg.StrOpt('default_deploy_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('deploy')),
+               help=_DEFAULT_IFACE_HELP.format('deploy')),
     cfg.ListOpt('enabled_inspect_interfaces',
                 default=['no-inspect'],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('inspect')),
+                help=_ENABLED_IFACE_HELP.format('inspect')),
     cfg.StrOpt('default_inspect_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('inspect')),
+               help=_DEFAULT_IFACE_HELP.format('inspect')),
     cfg.ListOpt('enabled_management_interfaces',
-                default=[],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('management')),
+                default=['ipmitool'],
+                help=_ENABLED_IFACE_HELP.format('management')),
     cfg.StrOpt('default_management_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('management')),
+               help=_DEFAULT_IFACE_HELP.format('management')),
     cfg.ListOpt('enabled_network_interfaces',
                 default=['flat', 'noop'],
                 help=_ENABLED_IFACE_HELP.format('network')),
     cfg.StrOpt('default_network_interface',
                help=_DEFAULT_IFACE_HELP.format('network')),
     cfg.ListOpt('enabled_power_interfaces',
-                default=[],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('power')),
+                default=['ipmitool'],
+                help=_ENABLED_IFACE_HELP.format('power')),
     cfg.StrOpt('default_power_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('power')),
+               help=_DEFAULT_IFACE_HELP.format('power')),
     cfg.ListOpt('enabled_raid_interfaces',
                 default=['agent', 'no-raid'],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('raid')),
+                help=_ENABLED_IFACE_HELP.format('raid')),
     cfg.StrOpt('default_raid_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('raid')),
+               help=_DEFAULT_IFACE_HELP.format('raid')),
     cfg.ListOpt('enabled_storage_interfaces',
                 default=['noop'],
                 help=_ENABLED_IFACE_HELP.format('storage')),
@@ -155,9 +141,9 @@ driver_opts = [
                 help=_DEFAULT_IFACE_HELP.format('storage')),
     cfg.ListOpt('enabled_vendor_interfaces',
                 default=['no-vendor'],
-                help=_ENABLED_IFACE_HELP_WITH_WARNING.format('vendor')),
+                help=_ENABLED_IFACE_HELP.format('vendor')),
     cfg.StrOpt('default_vendor_interface',
-               help=_DEFAULT_IFACE_HELP_WITH_WARNING.format('vendor')),
+               help=_DEFAULT_IFACE_HELP.format('vendor')),
 ]
 
 exc_log_opts = [
@@ -182,8 +168,8 @@ hash_opts = [
                       'exponent of the 2, there are 40 partitions in the ring.'
                       'A few thousand partitions should make rebalancing '
                       'smooth in most cases. The default is suitable for up '
-                      'to a few hundred conductors. Too many partitions has a '
-                      'CPU impact.')),
+                      'to a few hundred conductors. Configuring for too many '
+                      'partitions has a negative impact on CPU usage.')),
     cfg.IntOpt('hash_distribution_replicas',
                default=1,
                help=_('[Experimental Feature] '
@@ -276,6 +262,19 @@ service_opts = [
                       'However, the node name must be valid within '
                       'an AMQP key, and if using ZeroMQ, a valid '
                       'hostname, FQDN, or IP address.')),
+    cfg.StrOpt('pin_release_version',
+               choices=versions.RELEASE_VERSIONS,
+               # TODO(xek): mutable=True,
+               help=_('WARNING: This configuration option is part of the '
+                      'incomplete rolling upgrades work; changing this '
+                      'value has no effect. '
+                      'Used for rolling upgrades. Setting this option '
+                      'downgrades (or pins) the internal ironic RPC '
+                      'communication to the specified version to enable '
+                      'communication with older services. When doing a '
+                      'rolling upgrade from version X to version Y, set (pin) '
+                      'this to X. To unpin, leave it unset. Defaults to '
+                      'using the newest possible RPC behavior.')),
 ]
 
 utils_opts = [

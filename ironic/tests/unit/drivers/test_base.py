@@ -498,3 +498,45 @@ class NetworkInterfaceTestCase(base.TestCase):
         network.get_current_vif(mock_task, port)
         mock_gcv.assert_called_once_with(mock_task, port)
         self.assertTrue(mock_warn.called)
+
+
+class TestManagementInterface(base.TestCase):
+
+    def test_inject_nmi_default_impl(self):
+        management = fake.FakeManagement()
+        task_mock = mock.MagicMock(spec_set=['node'])
+
+        self.assertRaises(exception.UnsupportedDriverExtension,
+                          management.inject_nmi, task_mock)
+
+
+class TestBaseDriver(base.TestCase):
+
+    def test_class_variables_immutable(self):
+        # Test to make sure that our *_interfaces variables in the class don't
+        # get modified by a child class
+        self.assertEqual(('deploy', 'power'),
+                         driver_base.BaseDriver.core_interfaces)
+        self.assertEqual(('boot', 'console', 'inspect', 'management', 'raid'),
+                         driver_base.BaseDriver.standard_interfaces)
+        # Ensure that instantiating an instance of a derived class does not
+        # change our variables.
+        driver_base.BareDriver()
+
+        self.assertEqual(('deploy', 'power'),
+                         driver_base.BaseDriver.core_interfaces)
+        self.assertEqual(('boot', 'console', 'inspect', 'management', 'raid'),
+                         driver_base.BaseDriver.standard_interfaces)
+
+
+class TestBareDriver(base.TestCase):
+
+    def test_class_variables_immutable(self):
+        # Test to make sure that our *_interfaces variables in the class don't
+        # get modified by a child class
+        self.assertEqual(('deploy', 'power', 'network'),
+                         driver_base.BareDriver.core_interfaces)
+        self.assertEqual(
+            ('boot', 'console', 'inspect', 'management', 'raid', 'storage'),
+            driver_base.BareDriver.standard_interfaces
+        )

@@ -8,9 +8,9 @@ This is a quick walkthrough to get you started developing code for Ironic.
 This assumes you are already familiar with submitting code reviews to
 an OpenStack project.
 
-The gate currently runs the unit tests under Python 2.7, Python 3.4
-and Python 3.5. It is strongly encouraged to run the unit tests locally prior
-to submitting a patch.
+The gate currently runs the unit tests under Python 2.7 and Python 3.5. It
+is strongly encouraged to run the unit tests locally prior to submitting a
+patch.
 
 .. note::
     Do not run unit tests on the same environment as devstack due to
@@ -64,37 +64,6 @@ well.
   `<https://software.opensuse.org/download.html?project=graphics&package=graphviz-plugins>`_.
 
 
-(Optional) Installing Py34 requirements
----------------------------------------
-
-If you need Python 3.4, follow the instructions above to install prerequisites
-and *additionally* install the following packages:
-
-- On Ubuntu 14.x/Debian::
-
-    sudo apt-get install python3-dev
-
-- On Ubuntu 16.04::
-
-    wget https://www.python.org/ftp/python/3.4.4/Python-3.4.4.tgz
-    sudo tar xzf Python-3.4.4.tgz
-    cd Python-3.4.4
-    sudo ./configure
-    sudo make altinstall
-
-    # This will install Python 3.4 without replacing 3.5. To check if 3.4 was installed properly
-    run this command:
-
-    python3.4 -V
-
-- On Fedora 21/RHEL7/CentOS7::
-
-    sudo yum install python3-devel
-
-- On Fedora 22 and higher::
-
-    sudo dnf install python3-devel
-
 (Optional) Installing Py35 requirements
 ---------------------------------------
 
@@ -104,15 +73,18 @@ it, follow the instructions for installing prerequisites above and
 
 - On Ubuntu 14.04::
 
+    #Install SQLite development headers
+    sudo apt-get install libsqlite3-dev
+
     wget https://www.python.org/ftp/python/3.5.2/Python-3.5.2.tgz
     sudo tar xzf Python-3.5.2.tgz
     cd Python-3.5.2
     sudo ./configure
+
+    # Install Python 3.5 without replacing the system-wide Python version:
     sudo make altinstall
 
-    # This will install Python 3.5 without replacing 3.4. To check if 3.5 was installed properly
-    run this command:
-
+    # Check if Python 3.5 was installed properly:
     python3.5 -V
 
 - On Fedora 23::
@@ -151,7 +123,7 @@ Running Unit and Style Tests
 
 All unit tests should be run using tox. To run Ironic's entire test suite::
 
-    # to run the py27, py34, py35 unit tests, and the style tests
+    # to run the py27, py35 unit tests, and the style tests
     tox
 
 To run a specific test or tests, use the "-e" option followed by the tox target
@@ -161,13 +133,13 @@ name. For example::
     tox -epy27 -epep8
 
 .. note::
-    If tests are run under py27 and then run under py34 or py35 the following error may occur::
+    If tests are run under py27 and then run under py35 the following error may occur::
 
       db type could not be determined
       ERROR: InvocationError: '/home/ubuntu/ironic/.tox/py35/bin/ostestr'
 
     To overcome this error remove the file `.testrepository/times.dbm`
-    and then run the py34 or py35 test.
+    and then run the py35 test.
 
 You may pass options to the test programs using positional arguments.
 To run a specific unit test, this passes the -r option and desired test
@@ -195,6 +167,13 @@ Then run ``tox`` with the debug environment as one of the following::
 
 For more information see the `oslotest documentation
 <http://docs.openstack.org/developer/oslotest/features.html#debugging-with-oslo-debug-helper>`_.
+
+Database Setup
+--------------
+
+The unit tests need a local database setup, you can use
+``tools/test-setup.sh`` to set up the database the same way as setup
+in the OpenStack test systems.
 
 Additional Tox Targets
 ----------------------
@@ -640,25 +619,29 @@ Source credentials, create a key, and spawn an instance as the ``demo`` user::
 
 You should now see a Nova instance building::
 
-    openstack server list
-    +--------------------------------------+---------+--------+------------+-------------+----------+
-    | ID                                   | Name    | Status | Task State | Power State | Networks |
-    +--------------------------------------+---------+--------+------------+-------------+----------+
-    | a2c7f812-e386-4a22-b393-fe1802abd56e | testing | BUILD  | spawning   | NOSTATE     |          |
-    +--------------------------------------+---------+--------+------------+-------------+----------+
+    openstack server list --long
+    +----------+---------+--------+------------+-------------+----------+------------+----------+-------------------+------+------------+
+    | ID       | Name    | Status | Task State | Power State | Networks | Image Name | Image ID | Availability Zone | Host | Properties |
+    +----------+---------+--------+------------+-------------+----------+------------+----------+-------------------+------+------------+
+    | a2c7f812 | testing | BUILD  | spawning   | NOSTATE     |          | cirros-0.3 | 44d4092a | nova              |      |            |
+    | -e386-4a |         |        |            |             |          | .5-x86_64- | -51ac-47 |                   |      |            |
+    | 22-b393- |         |        |            |             |          | disk       | 51-9c50- |                   |      |            |
+    | fe1802ab |         |        |            |             |          |            | fd6e2050 |                   |      |            |
+    | d56e     |         |        |            |             |          |            | faa1     |                   |      |            |
+    +----------+---------+--------+------------+-------------+----------+------------+----------+-------------------+------+------------+
 
 Nova will be interfacing with Ironic conductor to spawn the node.  On the
 Ironic side, you should see an Ironic node associated with this Nova instance.
 It should be powered on and in a 'wait call-back' provisioning state::
 
     openstack baremetal node list
-    +--------------------------------------+--------------------------------------+-------------+--------------------+
-    | UUID                                 | Instance UUID                        | Power State | Provisioning State |
-    +--------------------------------------+--------------------------------------+-------------+--------------------+
-    | 9e592cbe-e492-4e4f-bf8f-4c9e0ad1868f | None                                 | power off   | None               |
-    | ec0c6384-cc3a-4edf-b7db-abde1998be96 | None                                 | power off   | None               |
-    | 4099e31c-576c-48f8-b460-75e1b14e497f | a2c7f812-e386-4a22-b393-fe1802abd56e | power on    | wait call-back     |
-    +--------------------------------------+--------------------------------------+-------------+--------------------+
+    +--------------------------------------+--------+--------------------------------------+-------------+--------------------+-------------+
+    | UUID                                 | Name   | Instance UUID                        | Power State | Provisioning State | Maintenance |
+    +--------------------------------------+--------+--------------------------------------+-------------+--------------------+-------------+
+    | 9e592cbe-e492-4e4f-bf8f-4c9e0ad1868f | node-0 | None                                 | power off   | None               | False       |
+    | ec0c6384-cc3a-4edf-b7db-abde1998be96 | node-1 | None                                 | power off   | None               | False       |
+    | 4099e31c-576c-48f8-b460-75e1b14e497f | node-2 | a2c7f812-e386-4a22-b393-fe1802abd56e | power on    | wait call-back     | False       |
+    +--------------------------------------+--------+--------------------------------------+-------------+--------------------+-------------+
 
 At this point, Ironic conductor has called to libvirt via SSH to power on a
 virtual machine, which will PXE + TFTP boot from the conductor node and
@@ -668,32 +651,36 @@ be active now::
     sudo virsh list --all
      Id    Name                           State
     ----------------------------------------------------
-     2     baremetalbrbm_2                running
-     -     baremetalbrbm_0                shut off
-     -     baremetalbrbm_1                shut off
+     2     node-2                         running
+     -     node-0                         shut off
+     -     node-1                         shut off
 
 This provisioning process may take some time depending on the performance of
 the host system, but Ironic should eventually show the node as having an
 'active' provisioning state::
 
     openstack baremetal node list
-    +--------------------------------------+--------------------------------------+-------------+--------------------+
-    | UUID                                 | Instance UUID                        | Power State | Provisioning State |
-    +--------------------------------------+--------------------------------------+-------------+--------------------+
-    | 9e592cbe-e492-4e4f-bf8f-4c9e0ad1868f | None                                 | power off   | None               |
-    | ec0c6384-cc3a-4edf-b7db-abde1998be96 | None                                 | power off   | None               |
-    | 4099e31c-576c-48f8-b460-75e1b14e497f | a2c7f812-e386-4a22-b393-fe1802abd56e | power on    | active             |
-    +--------------------------------------+--------------------------------------+-------------+--------------------+
+    +--------------------------------------+--------+--------------------------------------+-------------+--------------------+-------------+
+    | UUID                                 | Name   | Instance UUID                        | Power State | Provisioning State | Maintenance |
+    +--------------------------------------+--------+--------------------------------------+-------------+--------------------+-------------+
+    | 9e592cbe-e492-4e4f-bf8f-4c9e0ad1868f | node-0 | None                                 | power off   | None               | False       |
+    | ec0c6384-cc3a-4edf-b7db-abde1998be96 | node-1 | None                                 | power off   | None               | False       |
+    | 4099e31c-576c-48f8-b460-75e1b14e497f | node-2 | a2c7f812-e386-4a22-b393-fe1802abd56e | power on    | active             | False       |
+    +--------------------------------------+--------+--------------------------------------+-------------+--------------------+-------------+
 
 This should also be reflected in the Nova instance state, which at this point
 should be ACTIVE, Running and an associated private IP::
 
-    openstack server list
-    +--------------------------------------+---------+--------+------------+-------------+------------------+
-    | ID                                   | Name    | Status | Task State | Power State | Networks         |
-    +--------------------------------------+---------+--------+------------+-------------+------------------+
-    | a2c7f812-e386-4a22-b393-fe1802abd56e | testing | ACTIVE | -          | Running     | private=10.1.0.4 |
-    +--------------------------------------+---------+--------+------------+-------------+------------------+
+    openstack server list --long
+    +----------+---------+--------+------------+-------------+---------------+------------+----------+-------------------+------+------------+
+    | ID       | Name    | Status | Task State | Power State | Networks      | Image Name | Image ID | Availability Zone | Host | Properties |
+    +----------+---------+--------+------------+-------------+---------------+------------+----------+-------------------+------+------------+
+    | a2c7f812 | testing | ACTIVE | none       | Running     | private=10.1. | cirros-0.3 | 44d4092a | nova              |      |            |
+    | -e386-4a |         |        |            |             | 0.4, fd7d:1f3 | .5-x86_64- | -51ac-47 |                   |      |            |
+    | 22-b393- |         |        |            |             | c:4bf1:0:f816 | disk       | 51-9c50- |                   |      |            |
+    | fe1802ab |         |        |            |             | :3eff:f39d:6d |            | fd6e2050 |                   |      |            |
+    | d56e     |         |        |            |             | 94            |            | faa1     |                   |      |            |
+    +----------+---------+--------+------------+-------------+---------------+------------+----------+-------------------+------+------------+
 
 The server should now be accessible via SSH::
 

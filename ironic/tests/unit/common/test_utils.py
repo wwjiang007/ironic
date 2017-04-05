@@ -56,8 +56,8 @@ class ExecuteTestCase(base.TestCase):
         fd, tmpfilename = tempfile.mkstemp()
         _, tmpfilename2 = tempfile.mkstemp()
         try:
-            fp = os.fdopen(fd, 'w+')
-            fp.write('''#!/bin/sh
+            with os.fdopen(fd, 'w+') as fp:
+                fp.write('''#!/bin/sh
 # If stdin fails to get passed during one of the runs, make a note.
 if ! grep -q foo
 then
@@ -77,7 +77,6 @@ runs=$(($runs + 1))
 echo $runs > "$1"
 exit 1
 ''')
-            fp.close()
             os.chmod(tmpfilename, 0o755)
             try:
                 self.assertRaises(processutils.ProcessExecutionError,
@@ -91,9 +90,8 @@ exit 1
                                   "Are you running with a noexec /tmp?")
                 else:
                     raise
-            fp = open(tmpfilename2, 'r')
-            runs = fp.read()
-            fp.close()
+            with open(tmpfilename2, 'r') as fp:
+                runs = fp.read()
             self.assertNotEqual(runs.strip(), 'failure', 'stdin did not '
                                 'always get passed '
                                 'correctly')
@@ -120,8 +118,8 @@ exit 1
         fd, tmpfilename = tempfile.mkstemp()
         _, tmpfilename2 = tempfile.mkstemp()
         try:
-            fp = os.fdopen(fd, 'w+')
-            fp.write('''#!/bin/sh
+            with os.fdopen(fd, 'w+') as fp:
+                fp.write('''#!/bin/sh
 # If we've already run, bail out.
 grep -q foo "$1" && exit 1
 # Mark that we've run before.
@@ -129,7 +127,6 @@ echo foo > "$1"
 # Check that stdin gets passed correctly.
 grep foo
 ''')
-            fp.close()
             os.chmod(tmpfilename, 0o755)
             try:
                 utils.execute(tmpfilename,
@@ -253,15 +250,17 @@ class GenericUtilsTestCase(base.TestCase):
         data = b'Mary had a little lamb, its fleece as white as snow'
         ref = data
         with mock.patch('ironic.common.utils.open',
-                        mock.mock_open(read_data=data)):
+                        mock.mock_open(read_data=data)) as mopen:
             self.assertTrue(utils.file_has_content('foo', ref))
+            mopen.assert_called_once_with('foo', 'rb')
 
     def test_file_has_content_differ(self):
         data = b'Mary had a little lamb, its fleece as white as snow'
         ref = data + b'!'
         with mock.patch('ironic.common.utils.open',
-                        mock.mock_open(read_data=data)):
+                        mock.mock_open(read_data=data)) as mopen:
             self.assertFalse(utils.file_has_content('foo', ref))
+            mopen.assert_called_once_with('foo', 'rb')
 
     def test_is_valid_datapath_id(self):
         self.assertTrue(utils.is_valid_datapath_id("525400cf2d319fdf"))
@@ -426,6 +425,16 @@ class GenericUtilsTestCase(base.TestCase):
             self.assertFalse(
                 utils.is_valid_no_proxy(no_proxy),
                 msg="'no_proxy' value should be invalid: {}".format(no_proxy))
+
+    @mock.patch.object(utils, 'LOG', autospec=True)
+    def test_warn_about_deprecated_extra_vif_port_id(self, mock_log):
+        # Set variable to default value
+        utils.warn_deprecated_extra_vif_port_id = False
+        utils.warn_about_deprecated_extra_vif_port_id()
+        utils.warn_about_deprecated_extra_vif_port_id()
+        self.assertEqual(1, mock_log.warning.call_count)
+        self.assertIn("extra['vif_port_id'] is deprecated and will not",
+                      mock_log.warning.call_args[0][0])
 
 
 class TempFilesTestCase(base.TestCase):

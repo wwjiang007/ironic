@@ -36,16 +36,12 @@ class FlatNetwork(common.VIFPortIDMixin, neutron.NeutronNetworkInterfaceMixin,
 
     def __init__(self):
         cleaning_net = CONF.neutron.cleaning_network
-        # TODO(vdrok): Switch to DriverLoadError in Ocata
         if not cleaning_net:
             LOG.warning(_LW(
                 'Please specify a valid UUID or name for '
                 '[neutron]/cleaning_network configuration option so that '
-                'this interface is able to perform cleaning. It will be '
-                'required starting with the Ocata release, and if not '
-                'specified then, the conductor service will fail to start if '
-                '"flat" is in the list of values for '
-                '[DEFAULT]enabled_network_interfaces configuration option.'))
+                'this interface is able to perform cleaning. Otherwise, '
+                'cleaning operations will fail to start.'))
 
     def validate(self, task):
         """Validates the network interface.
@@ -69,17 +65,12 @@ class FlatNetwork(common.VIFPortIDMixin, neutron.NeutronNetworkInterfaceMixin,
         if not host_id:
             return
 
-        # FIXME(sambetts): Uncomment when we support vifs attached to
-        # portgroups
-        #
-        # ports = [p for p in task.ports if not p.portgroup_id]
-        # portgroups = task.portgroups
-
-        client = neutron.get_client(task.context.auth_token)
-        for port_like_obj in task.ports:  # + portgroups:
-            vif_port_id = (port_like_obj.extra.get('vif_port_id') or
-                           port_like_obj.internal_info.get(
-                               'tenant_vif_port_id'))
+        client = neutron.get_client()
+        for port_like_obj in task.ports + task.portgroups:
+            vif_port_id = (
+                port_like_obj.internal_info.get(common.TENANT_VIF_KEY) or
+                port_like_obj.extra.get('vif_port_id')
+            )
             if not vif_port_id:
                 continue
             body = {
@@ -128,7 +119,7 @@ class FlatNetwork(common.VIFPortIDMixin, neutron.NeutronNetworkInterfaceMixin,
         neutron.rollback_ports(task, self.get_cleaning_network_uuid())
         LOG.info(_LI('Adding cleaning network to node %s'), task.node.uuid)
         vifs = neutron.add_ports_to_network(
-            task, self.get_cleaning_network_uuid(), is_flat=True)
+            task, self.get_cleaning_network_uuid())
         for port in task.ports:
             if port.uuid in vifs:
                 internal_info = port.internal_info

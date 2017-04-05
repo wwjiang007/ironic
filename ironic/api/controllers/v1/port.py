@@ -33,6 +33,7 @@ from ironic.api import expose
 from ironic.common import exception
 from ironic.common.i18n import _
 from ironic.common import policy
+from ironic.common import utils as common_utils
 from ironic import objects
 
 METRICS = metrics_utils.get_metrics_logger(__name__)
@@ -512,6 +513,8 @@ class PortsController(rest.RestController):
 
         extra = pdict.get('extra')
         vif = extra.get('vif_port_id') if extra else None
+        if vif:
+            common_utils.warn_about_deprecated_extra_vif_port_id()
         if (pdict.get('portgroup_uuid') and
                 (pdict.get('pxe_enabled') or vif)):
             rpc_pg = objects.Portgroup.get_by_uuid(context,
@@ -530,13 +533,15 @@ class PortsController(rest.RestController):
 
         new_port = objects.Port(context, **pdict)
 
+        notify_extra = {'node_uuid': port.node_uuid,
+                        'portgroup_uuid': port.portgroup_uuid}
         notify.emit_start_notification(context, new_port, 'create',
-                                       node_uuid=port.node_uuid)
+                                       **notify_extra)
         with notify.handle_error_notification(context, new_port, 'create',
-                                              node_uuid=port.node_uuid):
+                                              **notify_extra):
             new_port.create()
         notify.emit_end_notification(context, new_port, 'create',
-                                     node_uuid=port.node_uuid)
+                                     **notify_extra)
         # Set the HTTP Location Header
         pecan.response.location = link.build_url('ports', new_port.uuid)
         return Port.convert_with_links(new_port)
@@ -604,17 +609,19 @@ class PortsController(rest.RestController):
                 rpc_port[field] = patch_val
 
         rpc_node = objects.Node.get_by_id(context, rpc_port.node_id)
+        notify_extra = {'node_uuid': rpc_node.uuid,
+                        'portgroup_uuid': port.portgroup_uuid}
         notify.emit_start_notification(context, rpc_port, 'update',
-                                       node_uuid=rpc_node.uuid)
+                                       **notify_extra)
         with notify.handle_error_notification(context, rpc_port, 'update',
-                                              node_uuid=rpc_node.uuid):
+                                              **notify_extra):
             topic = pecan.request.rpcapi.get_topic_for(rpc_node)
             new_port = pecan.request.rpcapi.update_port(context, rpc_port,
                                                         topic)
 
         api_port = Port.convert_with_links(new_port)
         notify.emit_end_notification(context, new_port, 'update',
-                                     node_uuid=api_port.node_uuid)
+                                     **notify_extra)
 
         return api_port
 
@@ -624,7 +631,7 @@ class PortsController(rest.RestController):
         """Delete a port.
 
         :param port_uuid: UUID of a port.
-        :raises OperationNotPermitted, HTTPNotFound
+        :raises: OperationNotPermitted, HTTPNotFound
         """
         context = pecan.request.context
         cdict = context.to_policy_values()
@@ -635,11 +642,20 @@ class PortsController(rest.RestController):
 
         rpc_port = objects.Port.get_by_uuid(context, port_uuid)
         rpc_node = objects.Node.get_by_id(context, rpc_port.node_id)
+
+        portgroup_uuid = None
+        if rpc_port.portgroup_id:
+            portgroup = objects.Portgroup.get_by_id(context,
+                                                    rpc_port.portgroup_id)
+            portgroup_uuid = portgroup.uuid
+
+        notify_extra = {'node_uuid': rpc_node.uuid,
+                        'portgroup_uuid': portgroup_uuid}
         notify.emit_start_notification(context, rpc_port, 'delete',
-                                       node_uuid=rpc_node.uuid)
+                                       **notify_extra)
         with notify.handle_error_notification(context, rpc_port, 'delete',
-                                              node_uuid=rpc_node.uuid):
+                                              **notify_extra):
             topic = pecan.request.rpcapi.get_topic_for(rpc_node)
             pecan.request.rpcapi.destroy_port(context, rpc_port, topic)
         notify.emit_end_notification(context, rpc_port, 'delete',
-                                     node_uuid=rpc_node.uuid)
+                                     **notify_extra)

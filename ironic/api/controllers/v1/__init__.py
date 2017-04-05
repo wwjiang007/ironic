@@ -97,9 +97,9 @@ class V1(base.APIBase):
         v1.links = [link.Link.make_link('self', pecan.request.public_url,
                                         'v1', '', bookmark=True),
                     link.Link.make_link('describedby',
-                                        'http://docs.openstack.org',
+                                        'https://docs.openstack.org',
                                         'developer/ironic/dev',
-                                        'api-spec-v1.html',
+                                        'webapi.html',
                                         bookmark=True, type='text/html')
                     ]
         v1.media_types = [MediaType('application/json',
@@ -199,7 +199,7 @@ class Controller(rest.RestController):
                 headers=headers)
 
     @pecan.expose()
-    def _route(self, args):
+    def _route(self, args, request=None):
         v = base.Version(pecan.request.headers, versions.MIN_VERSION_STRING,
                          versions.MAX_VERSION_STRING)
 
@@ -214,7 +214,7 @@ class Controller(rest.RestController):
         pecan.response.headers[base.Version.string] = str(v)
         pecan.request.version = v
 
-        return super(Controller, self)._route(args)
+        return super(Controller, self)._route(args, request)
 
 
 __all__ = ('Controller',)

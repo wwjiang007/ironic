@@ -92,7 +92,7 @@ class Port(base.IronicObject, object_base.VersionedObjectDictCompat):
 
         """
         db_port = cls.dbapi.get_port_by_id(port_id)
-        port = Port._from_db_object(cls(context), db_port)
+        port = cls._from_db_object(cls(context), db_port)
         return port
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -110,7 +110,7 @@ class Port(base.IronicObject, object_base.VersionedObjectDictCompat):
 
         """
         db_port = cls.dbapi.get_port_by_uuid(uuid)
-        port = Port._from_db_object(cls(context), db_port)
+        port = cls._from_db_object(cls(context), db_port)
         return port
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -128,7 +128,7 @@ class Port(base.IronicObject, object_base.VersionedObjectDictCompat):
 
         """
         db_port = cls.dbapi.get_port_by_address(address)
-        port = Port._from_db_object(cls(context), db_port)
+        port = cls._from_db_object(cls(context), db_port)
         return port
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -288,8 +288,9 @@ class Port(base.IronicObject, object_base.VersionedObjectDictCompat):
         :raises: PortNotFound
 
         """
-        current = self.__class__.get_by_uuid(self._context, uuid=self.uuid)
+        current = self.get_by_uuid(self._context, uuid=self.uuid)
         self.obj_refresh(current)
+        self.obj_reset_changes()
 
 
 @base.IronicObjectRegistry.register
@@ -306,7 +307,8 @@ class PortCRUDNotification(notification.NotificationBase):
 @base.IronicObjectRegistry.register
 class PortCRUDPayload(notification.NotificationPayloadBase):
     # Version 1.0: Initial version
-    VERSION = '1.0'
+    # Version 1.1: Add "portgroup_uuid" field
+    VERSION = '1.1'
 
     SCHEMA = {
         'address': ('port', 'address'),
@@ -325,12 +327,13 @@ class PortCRUDPayload(notification.NotificationPayloadBase):
             nullable=True),
         'pxe_enabled': object_fields.BooleanField(nullable=True),
         'node_uuid': object_fields.UUIDField(),
+        'portgroup_uuid': object_fields.UUIDField(nullable=True),
         'created_at': object_fields.DateTimeField(nullable=True),
         'updated_at': object_fields.DateTimeField(nullable=True),
         'uuid': object_fields.UUIDField()
-        # TODO(yuriyz): add "portgroup_uuid" field with portgroup notifications
     }
 
-    def __init__(self, port, node_uuid):
-        super(PortCRUDPayload, self).__init__(node_uuid=node_uuid)
+    def __init__(self, port, node_uuid, portgroup_uuid):
+        super(PortCRUDPayload, self).__init__(node_uuid=node_uuid,
+                                              portgroup_uuid=portgroup_uuid)
         self.populate_schema(port=port)

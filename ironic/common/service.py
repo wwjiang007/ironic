@@ -21,29 +21,31 @@ from ironic.common import config
 from ironic.conf import CONF
 from ironic import objects
 
-LOG = log.getLogger(__name__)
-
 
 def prepare_service(argv=None):
     argv = [] if argv is None else argv
     log.register_options(CONF)
-    log.set_defaults(default_log_levels=['amqp=WARNING',
-                                         'amqplib=WARNING',
-                                         'qpid.messaging=INFO',
-                                         'oslo_messaging=INFO',
-                                         'sqlalchemy=WARNING',
-                                         'stevedore=INFO',
-                                         'eventlet.wsgi.server=INFO',
-                                         'iso8601=WARNING',
-                                         'paramiko=WARNING',
-                                         'requests=WARNING',
-                                         'neutronclient=WARNING',
-                                         'glanceclient=WARNING',
-                                         'urllib3.connectionpool=WARNING',
-                                         'keystonemiddleware.auth_token=INFO',
-                                         'keystoneauth.session=INFO',
-                                         ])
+    log.set_defaults(default_log_levels=[
+        'amqp=WARNING',
+        'amqplib=WARNING',
+        'qpid.messaging=INFO',
+        'oslo_messaging=INFO',
+        'sqlalchemy=WARNING',
+        'stevedore=INFO',
+        'eventlet.wsgi.server=INFO',
+        'iso8601=WARNING',
+        'paramiko=WARNING',
+        'requests=WARNING',
+        'neutronclient=WARNING',
+        'glanceclient=WARNING',
+        'urllib3.connectionpool=WARNING',
+        'keystonemiddleware.auth_token=INFO',
+        'keystoneauth.session=INFO',
+    ])
     config.parse_args(argv)
+    # NOTE(vdrok): We need to setup logging after argv was parsed, otherwise
+    # it does not properly parse the options from config file and uses defaults
+    # from oslo_log
     log.setup(CONF, 'ironic')
     objects.register_all()
 

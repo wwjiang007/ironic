@@ -28,6 +28,7 @@ from oslo_utils import uuidutils
 from oslo_versionedobjects import base as ovo_base
 from oslo_versionedobjects import fields
 import six
+from six.moves import queue
 
 from ironic.common import boot_devices
 from ironic.common import driver_factory
@@ -85,6 +86,36 @@ class ChangeNodePowerStateTestCase(mgr_utils.ServiceSetUpMixin,
             # background task's link callback.
             self.assertIsNone(node.reservation)
 
+    def test_change_node_power_state_soft_power_off_timeout(self):
+        # Test change_node_power_state with timeout optional parameter
+        # including integration with conductor.utils.node_power_action and
+        # lower.
+        mgr_utils.mock_the_extension_manager(driver="fake_soft_power")
+        self.driver = driver_factory.get_driver("fake_soft_power")
+        node = obj_utils.create_test_node(self.context,
+                                          driver='fake_soft_power',
+                                          power_state=states.POWER_ON)
+        self._start_service()
+
+        with mock.patch.object(self.driver.power,
+                               'get_power_state') as get_power_mock:
+            get_power_mock.return_value = states.POWER_ON
+
+            self.service.change_node_power_state(self.context,
+                                                 node.uuid,
+                                                 states.SOFT_POWER_OFF,
+                                                 timeout=2)
+            self._stop_service()
+
+            get_power_mock.assert_called_once_with(mock.ANY)
+            node.refresh()
+            self.assertEqual(states.POWER_OFF, node.power_state)
+            self.assertIsNone(node.target_power_state)
+            self.assertIsNone(node.last_error)
+            # Verify the reservation has been cleared by
+            # background task's link callback.
+            self.assertIsNone(node.reservation)
+
     @mock.patch.object(conductor_utils, 'node_power_action')
     def test_change_node_power_state_node_already_locked(self,
                                                          pwr_act_mock):
@@ -135,7 +166,7 @@ class ChangeNodePowerStateTestCase(mgr_utils.ServiceSetUpMixin,
             self.assertEqual(exception.NoFreeConductorWorker, exc.exc_info[0])
 
             spawn_mock.assert_called_once_with(mock.ANY, mock.ANY,
-                                               mock.ANY)
+                                               mock.ANY, timeout=mock.ANY)
             node.refresh()
             self.assertEqual(initial_state, node.power_state)
             self.assertIsNone(node.target_power_state)
@@ -343,7 +374,8 @@ class ChangeNodePowerStateTestCase(mgr_utils.ServiceSetUpMixin,
                               states.POWER_ON)
 
             spawn_mock.assert_called_once_with(
-                conductor_utils.node_power_action, mock.ANY, states.POWER_ON)
+                conductor_utils.node_power_action, mock.ANY, states.POWER_ON,
+                timeout=None)
             self.assertFalse(mock_notif.called)
 
     @mock.patch('ironic.objects.node.NodeSetPowerStateNotification')
@@ -380,6 +412,33 @@ class ChangeNodePowerStateTestCase(mgr_utils.ServiceSetUpMixin,
                                      'ironic-conductor', CONF.host,
                                      'baremetal.node.power_set.end',
                                      obj_fields.NotificationLevel.INFO)
+
+    def test_change_node_power_state_unsupported_state(self):
+        # Test change_node_power_state where unsupported power state raises
+        # an exception
+        initial_state = states.POWER_ON
+        node = obj_utils.create_test_node(self.context, driver='fake',
+                                          power_state=initial_state)
+        self._start_service()
+
+        with mock.patch.object(self.driver.power,
+                               'get_supported_power_states') as supported_mock:
+            supported_mock.return_value = [
+                states.POWER_ON, states.POWER_OFF, states.REBOOT]
+
+            exc = self.assertRaises(messaging.rpc.ExpectedException,
+                                    self.service.change_node_power_state,
+                                    self.context,
+                                    node.uuid,
+                                    states.SOFT_POWER_OFF)
+
+            self.assertEqual(exception.InvalidParameterValue, exc.exc_info[0])
+
+            node.refresh()
+            supported_mock.assert_called_once_with(mock.ANY)
+            self.assertEqual(states.POWER_ON, node.power_state)
+            self.assertIsNone(node.target_power_state)
+            self.assertIsNone(node.last_error)
 
 
 @mgr_utils.mock_record_keepalive
@@ -454,6 +513,22 @@ class UpdateNodeTestCase(mgr_utils.ServiceSetUpMixin,
         # verify change did not happen
         res = objects.Node.get_by_uuid(self.context, node['uuid'])
         self.assertEqual({'test': 'one'}, res['extra'])
+
+    def test_update_node_already_associated(self):
+        old_instance = uuidutils.generate_uuid()
+        node = obj_utils.create_test_node(self.context, driver='fake',
+                                          instance_uuid=old_instance)
+        node.instance_uuid = uuidutils.generate_uuid()
+        exc = self.assertRaises(messaging.rpc.ExpectedException,
+                                self.service.update_node,
+                                self.context,
+                                node)
+        # Compare true exception hidden by @messaging.expected_exceptions
+        self.assertEqual(exception.NodeAssociated, exc.exc_info[0])
+
+        # verify change did not happen
+        res = objects.Node.get_by_uuid(self.context, node['uuid'])
+        self.assertEqual(old_instance, res['instance_uuid'])
 
     @mock.patch('ironic.drivers.modules.fake.FakePower.get_power_state')
     def _test_associate_node(self, power_state, mock_get_power_state):
@@ -549,13 +624,15 @@ class VendorPassthruTestCase(mgr_utils.ServiceSetUpMixin,
 
     @mock.patch.object(task_manager.TaskManager, 'upgrade_lock')
     @mock.patch.object(task_manager.TaskManager, 'spawn_after')
-    def test_vendor_passthru_async(self, mock_spawn, mock_upgrade):
-        node = obj_utils.create_test_node(self.context, driver='fake')
+    def _test_vendor_passthru_async(self, driver, vendor_iface, mock_spawn,
+                                    mock_upgrade):
+        node = obj_utils.create_test_node(self.context, driver=driver,
+                                          vendor_interface=vendor_iface)
         info = {'bar': 'baz'}
         self._start_service()
 
         response = self.service.vendor_passthru(self.context, node.uuid,
-                                                'first_method', 'POST',
+                                                'second_method', 'POST',
                                                 info)
         # Waiting to make sure the below assertions are valid.
         self._stop_service()
@@ -572,6 +649,12 @@ class VendorPassthruTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertIsNone(node.last_error)
         # Verify reservation has been cleared.
         self.assertIsNone(node.reservation)
+
+    def test_vendor_passthru_async(self):
+        self._test_vendor_passthru_async('fake', None)
+
+    def test_vendor_passthru_async_hw_type(self):
+        self._test_vendor_passthru_async('fake-hardware', 'fake')
 
     @mock.patch.object(task_manager.TaskManager, 'upgrade_lock')
     @mock.patch.object(task_manager.TaskManager, 'spawn_after')
@@ -763,12 +846,20 @@ class VendorPassthruTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertEqual(exception.UnsupportedDriverExtension,
                          exc.exc_info[0])
 
+    @mock.patch.object(driver_factory, 'get_interface')
     @mock.patch.object(manager.ConductorManager, '_spawn_worker')
-    def test_driver_vendor_passthru_sync(self, mock_spawn):
+    def _test_driver_vendor_passthru_sync(self, is_hw_type, mock_spawn,
+                                          mock_get_if):
         expected = {'foo': 'bar'}
-        self.driver.vendor = mock.Mock(spec=drivers_base.VendorInterface)
+        vendor_mock = mock.Mock(spec=drivers_base.VendorInterface)
+        if is_hw_type:
+            mock_get_if.return_value = vendor_mock
+            driver_name = 'fake-hardware'
+        else:
+            self.driver.vendor = vendor_mock
+            driver_name = 'fake'
         test_method = mock.MagicMock(return_value=expected)
-        self.driver.vendor.driver_routes = {
+        vendor_mock.driver_routes = {
             'test_method': {'func': test_method,
                             'async': False,
                             'attach': False,
@@ -776,19 +867,29 @@ class VendorPassthruTestCase(mgr_utils.ServiceSetUpMixin,
         self.service.init_host()
         # init_host() called _spawn_worker because of the heartbeat
         mock_spawn.reset_mock()
+        # init_host() called get_interface during driver loading
+        mock_get_if.reset_mock()
 
         vendor_args = {'test': 'arg'}
         response = self.service.driver_vendor_passthru(
-            self.context, 'fake', 'test_method', 'POST', vendor_args)
+            self.context, driver_name, 'test_method', 'POST', vendor_args)
 
         # Assert that the vendor interface has no custom
         # driver_vendor_passthru()
-        self.assertFalse(hasattr(self.driver.vendor, 'driver_vendor_passthru'))
+        self.assertFalse(hasattr(vendor_mock, 'driver_vendor_passthru'))
         self.assertEqual(expected, response['return'])
         self.assertFalse(response['async'])
         test_method.assert_called_once_with(self.context, **vendor_args)
         # No worker was spawned
         self.assertFalse(mock_spawn.called)
+        if is_hw_type:
+            mock_get_if.assert_called_once_with(mock.ANY, 'vendor', 'fake')
+
+    def test_driver_vendor_passthru_sync(self):
+        self._test_driver_vendor_passthru_sync(False)
+
+    def test_driver_vendor_passthru_sync_hw_type(self):
+        self._test_driver_vendor_passthru_sync(True)
 
     @mock.patch.object(manager.ConductorManager, '_spawn_worker')
     def test_driver_vendor_passthru_async(self, mock_spawn):
@@ -862,20 +963,61 @@ class VendorPassthruTestCase(mgr_utils.ServiceSetUpMixin,
                           self.context, 'does_not_exist', 'test_method',
                           'POST', {})
 
-    def test_get_driver_vendor_passthru_methods(self):
-        self.driver.vendor = mock.Mock(spec=drivers_base.VendorInterface)
+    @mock.patch.object(driver_factory, 'default_interface', autospec=True)
+    def test_driver_vendor_passthru_no_default_interface(self,
+                                                         mock_def_iface):
+        self.service.init_host()
+        # NOTE(rloo): service.init_host() will call
+        #             driver_factory.default_interface() and we want these to
+        #             succeed, so we set the side effect *after* that call.
+        mock_def_iface.reset_mock()
+        mock_def_iface.side_effect = exception.NoValidDefaultForInterface('no')
+        exc = self.assertRaises(messaging.ExpectedException,
+                                self.service.driver_vendor_passthru,
+                                self.context, 'fake-hardware', 'test_method',
+                                'POST', {})
+        mock_def_iface.assert_called_once_with(mock.ANY, 'vendor',
+                                               driver_name='fake-hardware')
+        # Compare true exception hidden by @messaging.expected_exceptions
+        self.assertEqual(exception.NoValidDefaultForInterface,
+                         exc.exc_info[0])
+
+    @mock.patch.object(driver_factory, 'get_interface')
+    def _test_get_driver_vendor_passthru_methods(self, is_hw_type,
+                                                 mock_get_if):
+        vendor_mock = mock.Mock(spec=drivers_base.VendorInterface)
+        if is_hw_type:
+            mock_get_if.return_value = vendor_mock
+            driver_name = 'fake-hardware'
+        else:
+            self.driver.vendor = vendor_mock
+            driver_name = 'fake'
         fake_routes = {'test_method': {'async': True,
                                        'description': 'foo',
                                        'http_methods': ['POST'],
                                        'func': None}}
-        self.driver.vendor.driver_routes = fake_routes
+        vendor_mock.driver_routes = fake_routes
         self.service.init_host()
 
+        # init_host() will call get_interface
+        mock_get_if.reset_mock()
+
         data = self.service.get_driver_vendor_passthru_methods(self.context,
-                                                               'fake')
+                                                               driver_name)
         # The function reference should not be returned
         del fake_routes['test_method']['func']
         self.assertEqual(fake_routes, data)
+
+        if is_hw_type:
+            mock_get_if.assert_called_once_with(mock.ANY, 'vendor', 'fake')
+        else:
+            mock_get_if.assert_not_called()
+
+    def test_get_driver_vendor_passthru_methods(self):
+        self._test_get_driver_vendor_passthru_methods(False)
+
+    def test_get_driver_vendor_passthru_methods_hw_type(self):
+        self._test_get_driver_vendor_passthru_methods(True)
 
     def test_get_driver_vendor_passthru_methods_not_supported(self):
         self.service.init_host()
@@ -886,6 +1028,25 @@ class VendorPassthruTestCase(mgr_utils.ServiceSetUpMixin,
             self.context, 'fake')
         # Compare true exception hidden by @messaging.expected_exceptions
         self.assertEqual(exception.UnsupportedDriverExtension,
+                         exc.exc_info[0])
+
+    @mock.patch.object(driver_factory, 'default_interface', autospec=True)
+    def test_get_driver_vendor_passthru_methods_no_default_interface(
+            self, mock_def_iface):
+        self.service.init_host()
+        # NOTE(rloo): service.init_host() will call
+        #             driver_factory.default_interface() and we want these to
+        #             succeed, so we set the side effect *after* that call.
+        mock_def_iface.reset_mock()
+        mock_def_iface.side_effect = exception.NoValidDefaultForInterface('no')
+        exc = self.assertRaises(
+            messaging.rpc.ExpectedException,
+            self.service.get_driver_vendor_passthru_methods,
+            self.context, 'fake-hardware')
+        mock_def_iface.assert_called_once_with(mock.ANY, 'vendor',
+                                               driver_name='fake-hardware')
+        # Compare true exception hidden by @messaging.expected_exceptions
+        self.assertEqual(exception.NoValidDefaultForInterface,
                          exc.exc_info[0])
 
     @mock.patch.object(drivers_base.VendorInterface, 'driver_validate')
@@ -1679,9 +1840,7 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertFalse(mock_validate.called)
 
     @mock.patch('ironic.conductor.task_manager.TaskManager.process_event')
-    @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
-    def test_do_node_clean_validate_fail(self, mock_validate, mock_process):
-        # power validate fails
+    def _test_do_node_clean_validate_fail(self, mock_validate, mock_process):
         mock_validate.side_effect = exception.InvalidParameterValue('error')
         node = obj_utils.create_test_node(
             self.context, driver='fake', provision_state=states.MANAGEABLE,
@@ -1696,7 +1855,17 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertFalse(mock_process.called)
 
     @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
-    def test_do_node_clean_invalid_state(self, mock_validate):
+    def test_do_node_clean_power_validate_fail(self, mock_validate):
+        self._test_do_node_clean_validate_fail(mock_validate)
+
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
+    def test_do_node_clean_network_validate_fail(self, mock_validate):
+        self._test_do_node_clean_validate_fail(mock_validate)
+
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
+    @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
+    def test_do_node_clean_invalid_state(self, mock_power_valid,
+                                         mock_network_valid):
         # test node.provision_state is incorrect for clean
         node = obj_utils.create_test_node(
             self.context, driver='fake', provision_state=states.ENROLL,
@@ -1707,20 +1876,24 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
                                 self.context, node.uuid, [])
         # Compare true exception hidden by @messaging.expected_exceptions
         self.assertEqual(exception.InvalidStateRequested, exc.exc_info[0])
-        mock_validate.assert_called_once_with(mock.ANY)
+        mock_power_valid.assert_called_once_with(mock.ANY)
+        mock_network_valid.assert_called_once_with(mock.ANY)
         node.refresh()
         self.assertNotIn('clean_steps', node.driver_internal_info)
 
     @mock.patch('ironic.conductor.manager.ConductorManager._spawn_worker')
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
     @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
-    def test_do_node_clean_ok(self, mock_validate, mock_spawn):
+    def test_do_node_clean_ok(self, mock_power_valid, mock_network_valid,
+                              mock_spawn):
         node = obj_utils.create_test_node(
             self.context, driver='fake', provision_state=states.MANAGEABLE,
             target_provision_state=states.NOSTATE, last_error='old error')
         self._start_service()
         clean_steps = [self.deploy_raid]
         self.service.do_node_clean(self.context, node.uuid, clean_steps)
-        mock_validate.assert_called_once_with(mock.ANY)
+        mock_power_valid.assert_called_once_with(mock.ANY)
+        mock_network_valid.assert_called_once_with(mock.ANY)
         mock_spawn.assert_called_with(self.service._do_node_clean, mock.ANY,
                                       clean_steps)
         node.refresh()
@@ -1731,8 +1904,10 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertIsNone(node.last_error)
 
     @mock.patch('ironic.conductor.manager.ConductorManager._spawn_worker')
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
     @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
-    def test_do_node_clean_worker_pool_full(self, mock_validate, mock_spawn):
+    def test_do_node_clean_worker_pool_full(self, mock_power_valid,
+                                            mock_network_valid, mock_spawn):
         prv_state = states.MANAGEABLE
         tgt_prv_state = states.NOSTATE
         node = obj_utils.create_test_node(
@@ -1747,7 +1922,8 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         # Compare true exception hidden by @messaging.expected_exceptions
         self.assertEqual(exception.NoFreeConductorWorker, exc.exc_info[0])
         self._stop_service()
-        mock_validate.assert_called_once_with(mock.ANY)
+        mock_power_valid.assert_called_once_with(mock.ANY)
+        mock_network_valid.assert_called_once_with(mock.ANY)
         mock_spawn.assert_called_with(self.service._do_node_clean, mock.ANY,
                                       clean_steps)
         node.refresh()
@@ -1911,9 +2087,8 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
     def test_continue_node_clean_manual_abort_last_clean_step(self):
         self._continue_node_clean_abort_last_clean_step(manual=True)
 
-    @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
     def __do_node_clean_validate_fail(self, mock_validate, clean_steps=None):
-        # InvalidParameterValue should be cause node to go to CLEANFAIL
+        # InvalidParameterValue should cause node to go to CLEANFAIL
         mock_validate.side_effect = exception.InvalidParameterValue('error')
         tgt_prov_state = states.MANAGEABLE if clean_steps else states.AVAILABLE
         node = obj_utils.create_test_node(
@@ -1928,11 +2103,22 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertEqual(tgt_prov_state, node.target_provision_state)
         mock_validate.assert_called_once_with(mock.ANY)
 
-    def test__do_node_clean_automated_validate_fail(self):
-        self.__do_node_clean_validate_fail()
+    @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
+    def test__do_node_clean_automated_power_validate_fail(self, mock_validate):
+        self.__do_node_clean_validate_fail(mock_validate)
 
-    def test__do_node_clean_manual_validate_fail(self):
-        self.__do_node_clean_validate_fail(clean_steps=[])
+    @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
+    def test__do_node_clean_manual_power_validate_fail(self, mock_validate):
+        self.__do_node_clean_validate_fail(mock_validate, clean_steps=[])
+
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
+    def test__do_node_clean_automated_network_validate_fail(self,
+                                                            mock_validate):
+        self.__do_node_clean_validate_fail(mock_validate)
+
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
+    def test__do_node_clean_manual_network_validate_fail(self, mock_validate):
+        self.__do_node_clean_validate_fail(mock_validate, clean_steps=[])
 
     @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
     def test__do_node_clean_automated_disabled(self, mock_validate):
@@ -1958,8 +2144,10 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertNotIn('clean_steps', node.driver_internal_info)
         self.assertNotIn('clean_step_index', node.driver_internal_info)
 
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
     @mock.patch('ironic.drivers.modules.fake.FakeDeploy.prepare_cleaning')
-    def __do_node_clean_prepare_clean_fail(self, mock_prep, clean_steps=None):
+    def __do_node_clean_prepare_clean_fail(self, mock_prep, mock_validate,
+                                           clean_steps=None):
         # Exception from task.driver.deploy.prepare_cleaning should cause node
         # to go to CLEANFAIL
         mock_prep.side_effect = exception.InvalidParameterValue('error')
@@ -1975,6 +2163,7 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertEqual(states.CLEANFAIL, node.provision_state)
         self.assertEqual(tgt_prov_state, node.target_provision_state)
         mock_prep.assert_called_once_with(mock.ANY)
+        mock_validate.assert_called_once_with(task)
 
     def test__do_node_clean_automated_prepare_clean_fail(self):
         self.__do_node_clean_prepare_clean_fail()
@@ -1982,8 +2171,10 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
     def test__do_node_clean_manual_prepare_clean_fail(self):
         self.__do_node_clean_prepare_clean_fail(clean_steps=[self.deploy_raid])
 
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
     @mock.patch('ironic.drivers.modules.fake.FakeDeploy.prepare_cleaning')
-    def __do_node_clean_prepare_clean_wait(self, mock_prep, clean_steps=None):
+    def __do_node_clean_prepare_clean_wait(self, mock_prep, mock_validate,
+                                           clean_steps=None):
         mock_prep.return_value = states.CLEANWAIT
         tgt_prov_state = states.MANAGEABLE if clean_steps else states.AVAILABLE
         node = obj_utils.create_test_node(
@@ -1997,6 +2188,7 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self.assertEqual(states.CLEANWAIT, node.provision_state)
         self.assertEqual(tgt_prov_state, node.target_provision_state)
         mock_prep.assert_called_once_with(mock.ANY)
+        mock_validate.assert_called_once_with(mock.ANY)
 
     def test__do_node_clean_automated_prepare_clean_wait(self):
         self.__do_node_clean_prepare_clean_wait()
@@ -2004,9 +2196,10 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
     def test__do_node_clean_manual_prepare_clean_wait(self):
         self.__do_node_clean_prepare_clean_wait(clean_steps=[self.deploy_raid])
 
+    @mock.patch.object(n_flat.FlatNetwork, 'validate', autospec=True)
     @mock.patch.object(conductor_utils, 'set_node_cleaning_steps')
-    def __do_node_clean_steps_fail(self, mock_steps, clean_steps=None,
-                                   invalid_exc=True):
+    def __do_node_clean_steps_fail(self, mock_steps, mock_validate,
+                                   clean_steps=None, invalid_exc=True):
         if invalid_exc:
             mock_steps.side_effect = exception.InvalidParameterValue('invalid')
         else:
@@ -2020,6 +2213,7 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         with task_manager.acquire(
                 self.context, node.uuid, shared=False) as task:
             self.service._do_node_clean(task, clean_steps=clean_steps)
+            mock_validate.assert_called_once_with(mock.ANY, task)
         node.refresh()
         self.assertEqual(states.CLEANFAIL, node.provision_state)
         self.assertEqual(tgt_prov_state, node.target_provision_state)
@@ -2037,9 +2231,10 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
     @mock.patch.object(conductor_utils, 'set_node_cleaning_steps')
     @mock.patch('ironic.conductor.manager.ConductorManager.'
                 '_do_next_clean_step')
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.validate')
     @mock.patch('ironic.drivers.modules.fake.FakePower.validate')
-    def __do_node_clean(self, mock_validate, mock_next_step, mock_steps,
-                        clean_steps=None):
+    def __do_node_clean(self, mock_power_valid, mock_network_valid,
+                        mock_next_step, mock_steps, clean_steps=None):
         if clean_steps:
             tgt_prov_state = states.MANAGEABLE
             driver_info = {}
@@ -2062,7 +2257,8 @@ class DoNodeCleanTestCase(mgr_utils.ServiceSetUpMixin,
         self._stop_service()
         node.refresh()
 
-        mock_validate.assert_called_once_with(task)
+        mock_power_valid.assert_called_once_with(task)
+        mock_network_valid.assert_called_once_with(task)
         mock_next_step.assert_called_once_with(mock.ANY, 0)
         mock_steps.assert_called_once_with(task)
         if clean_steps:
@@ -3034,10 +3230,9 @@ class UpdatePortTestCase(mgr_utils.ServiceSetUpMixin,
     @mock.patch.object(n_flat.FlatNetwork, 'port_changed', autospec=True)
     @mock.patch.object(n_flat.FlatNetwork, 'validate', autospec=True)
     def test_update_port_address_maintenance(self, mock_val, mock_pc):
-        node = obj_utils.create_test_node(self.context, driver='fake',
-                                          instance_uuid='uuid',
-                                          provision_state='active',
-                                          maintenance=True)
+        node = obj_utils.create_test_node(
+            self.context, driver='fake', maintenance=True,
+            instance_uuid=uuidutils.generate_uuid(), provision_state='active')
         port = obj_utils.create_test_port(self.context,
                                           node_id=node.id,
                                           extra={'vif_port_id': 'fake-id'})
@@ -3167,70 +3362,34 @@ class UpdatePortTestCase(mgr_utils.ServiceSetUpMixin,
         expected_result = {}
         self.assertEqual(expected_result, actual_result)
 
-    @mock.patch.object(manager.ConductorManager, '_mapped_to_this_conductor')
-    @mock.patch.object(dbapi.IMPL, 'get_nodeinfo_list')
     @mock.patch.object(task_manager, 'acquire')
-    def test___send_sensor_data(self, acquire_mock, get_nodeinfo_list_mock,
-                                _mapped_to_this_conductor_mock):
-        node = obj_utils.create_test_node(self.context,
-                                          driver='fake')
+    def test_send_sensor_task(self, acquire_mock):
+        nodes = queue.Queue()
+        for i in range(5):
+            nodes.put_nowait(('fake_uuid-%d' % i, 'fake', None))
         self._start_service()
         CONF.set_override('send_sensor_data', True, group='conductor')
+
         acquire_mock.return_value.__enter__.return_value.driver = self.driver
         with mock.patch.object(self.driver.management,
                                'get_sensors_data') as get_sensors_data_mock:
             with mock.patch.object(self.driver.management,
                                    'validate') as validate_mock:
                 get_sensors_data_mock.return_value = 'fake-sensor-data'
-                _mapped_to_this_conductor_mock.return_value = True
-                get_nodeinfo_list_mock.return_value = [(node.uuid, node.driver,
-                                                        node.instance_uuid)]
-                self.service._send_sensor_data(self.context)
-                self.assertTrue(get_nodeinfo_list_mock.called)
-                self.assertTrue(_mapped_to_this_conductor_mock.called)
-                self.assertTrue(acquire_mock.called)
-                self.assertTrue(get_sensors_data_mock.called)
-                self.assertTrue(validate_mock.called)
+                self.service._sensors_nodes_task(self.context, nodes)
+                self.assertEqual(5, acquire_mock.call_count)
+                self.assertEqual(5, validate_mock.call_count)
+                self.assertEqual(5, get_sensors_data_mock.call_count)
 
-    @mock.patch.object(manager.ConductorManager, '_fail_if_in_state',
-                       autospec=True)
-    @mock.patch.object(manager.ConductorManager, '_mapped_to_this_conductor')
-    @mock.patch.object(dbapi.IMPL, 'get_nodeinfo_list')
-    @mock.patch.object(task_manager, 'acquire')
-    def test___send_sensor_data_disabled(self, acquire_mock,
-                                         get_nodeinfo_list_mock,
-                                         _mapped_to_this_conductor_mock,
-                                         mock_fail_if_state):
-        node = obj_utils.create_test_node(self.context,
-                                          driver='fake')
-        self._start_service()
-        acquire_mock.return_value.__enter__.return_value.driver = self.driver
-        with mock.patch.object(self.driver.management,
-                               'get_sensors_data') as get_sensors_data_mock:
-            with mock.patch.object(self.driver.management,
-                                   'validate') as validate_mock:
-                get_sensors_data_mock.return_value = 'fake-sensor-data'
-                _mapped_to_this_conductor_mock.return_value = True
-                get_nodeinfo_list_mock.return_value = [(node.uuid, node.driver,
-                                                        node.instance_uuid)]
-                self.service._send_sensor_data(self.context)
-                self.assertFalse(get_nodeinfo_list_mock.called)
-                self.assertFalse(_mapped_to_this_conductor_mock.called)
-                self.assertFalse(acquire_mock.called)
-                self.assertFalse(get_sensors_data_mock.called)
-                self.assertFalse(validate_mock.called)
-                mock_fail_if_state.assert_called_once_with(
-                    mock.ANY, mock.ANY,
-                    {'provision_state': 'deploying', 'reserved': False},
-                    'deploying', 'provision_updated_at',
-                    last_error=mock.ANY)
-
-    @mock.patch.object(manager.ConductorManager, 'iter_nodes', autospec=True)
     @mock.patch.object(task_manager, 'acquire', autospec=True)
-    def test___send_sensor_data_no_management(self, acquire_mock,
-                                              iter_nodes_mock):
+    def test_send_sensor_task_no_management(self, acquire_mock):
+        nodes = queue.Queue()
+        nodes.put_nowait(('fake_uuid', 'fake', None))
+
         CONF.set_override('send_sensor_data', True, group='conductor')
-        iter_nodes_mock.return_value = [('fake_uuid1', 'fake', 'fake_uuid2')]
+
+        self._start_service()
+
         self.driver.management = None
         acquire_mock.return_value.__enter__.return_value.driver = self.driver
 
@@ -3238,12 +3397,67 @@ class UpdatePortTestCase(mgr_utils.ServiceSetUpMixin,
                                autospec=True) as get_sensors_data_mock:
             with mock.patch.object(fake.FakeManagement, 'validate',
                                    autospec=True) as validate_mock:
-                self.service._send_sensor_data(self.context)
+                self.service._sensors_nodes_task(self.context, nodes)
 
-        self.assertTrue(iter_nodes_mock.called)
         self.assertTrue(acquire_mock.called)
         self.assertFalse(get_sensors_data_mock.called)
         self.assertFalse(validate_mock.called)
+
+    @mock.patch.object(manager.ConductorManager, '_spawn_worker')
+    @mock.patch.object(manager.ConductorManager, '_mapped_to_this_conductor')
+    @mock.patch.object(dbapi.IMPL, 'get_nodeinfo_list')
+    def test___send_sensor_data(self, get_nodeinfo_list_mock,
+                                _mapped_to_this_conductor_mock,
+                                mock_spawn):
+        self._start_service()
+
+        CONF.set_override('send_sensor_data', True, group='conductor')
+        # NOTE(galyna): do not wait for threads to be finished in unittests
+        CONF.set_override('send_sensor_data_wait_timeout', 0,
+                          group='conductor')
+        _mapped_to_this_conductor_mock.return_value = True
+        get_nodeinfo_list_mock.return_value = [('fake_uuid', 'fake', None)]
+        self.service._send_sensor_data(self.context)
+        mock_spawn.assert_called_with(self.service._sensors_nodes_task,
+                                      self.context,
+                                      mock.ANY)
+
+    @mock.patch('ironic.conductor.manager.ConductorManager._spawn_worker')
+    @mock.patch.object(manager.ConductorManager, '_mapped_to_this_conductor')
+    @mock.patch.object(dbapi.IMPL, 'get_nodeinfo_list')
+    def test___send_sensor_data_multiple_workers(
+            self, get_nodeinfo_list_mock, _mapped_to_this_conductor_mock,
+            mock_spawn):
+        self._start_service()
+        mock_spawn.reset_mock()
+
+        number_of_workers = 8
+        CONF.set_override('send_sensor_data', True, group='conductor')
+        CONF.set_override('send_sensor_data_workers', number_of_workers,
+                          group='conductor')
+        # NOTE(galyna): do not wait for threads to be finished in unittests
+        CONF.set_override('send_sensor_data_wait_timeout', 0,
+                          group='conductor')
+
+        _mapped_to_this_conductor_mock.return_value = True
+        get_nodeinfo_list_mock.return_value = [('fake_uuid', 'fake',
+                                                None)] * 20
+        self.service._send_sensor_data(self.context)
+        self.assertEqual(number_of_workers,
+                         mock_spawn.call_count)
+
+    @mock.patch.object(manager.ConductorManager, '_mapped_to_this_conductor')
+    @mock.patch.object(dbapi.IMPL, 'get_nodeinfo_list')
+    def test___send_sensor_data_disabled(self, get_nodeinfo_list_mock,
+                                         _mapped_to_this_conductor_mock):
+        self._start_service()
+        get_nodeinfo_list_mock.reset_mock()
+        with mock.patch.object(manager.ConductorManager,
+                               '_spawn_worker') as _spawn_mock:
+            self.service._send_sensor_data(self.context)
+            self.assertFalse(get_nodeinfo_list_mock.called)
+            self.assertFalse(_mapped_to_this_conductor_mock.called)
+            self.assertFalse(_spawn_mock.called)
 
     def test_set_boot_device(self):
         node = obj_utils.create_test_node(self.context, driver='fake')
@@ -3321,6 +3535,64 @@ class UpdatePortTestCase(mgr_utils.ServiceSetUpMixin,
                                     self.context, node.uuid)
             # Compare true exception hidden by @messaging.expected_exceptions
             self.assertEqual(exception.InvalidParameterValue, exc.exc_info[0])
+
+    def test_inject_nmi(self):
+        node = obj_utils.create_test_node(self.context, driver='fake')
+        with mock.patch.object(self.driver.management, 'validate') as mock_val:
+            with mock.patch.object(self.driver.management,
+                                   'inject_nmi') as mock_sbd:
+                self.service.inject_nmi(self.context, node.uuid)
+                mock_val.assert_called_once_with(mock.ANY)
+                mock_sbd.assert_called_once_with(mock.ANY)
+
+    def test_inject_nmi_node_locked(self):
+        node = obj_utils.create_test_node(self.context, driver='fake',
+                                          reservation='fake-reserv')
+        exc = self.assertRaises(messaging.rpc.ExpectedException,
+                                self.service.inject_nmi,
+                                self.context, node.uuid)
+        # Compare true exception hidden by @messaging.expected_exceptions
+        self.assertEqual(exception.NodeLocked, exc.exc_info[0])
+
+    def test_inject_nmi_not_supported(self):
+        node = obj_utils.create_test_node(self.context, driver='fake')
+        # null the management interface
+        self.driver.management = None
+        exc = self.assertRaises(messaging.rpc.ExpectedException,
+                                self.service.inject_nmi,
+                                self.context, node.uuid)
+        # Compare true exception hidden by @messaging.expected_exceptions
+        self.assertEqual(exception.UnsupportedDriverExtension,
+                         exc.exc_info[0])
+
+    def test_inject_nmi_validate_invalid_param(self):
+        node = obj_utils.create_test_node(self.context, driver='fake')
+        with mock.patch.object(self.driver.management, 'validate') as mock_val:
+            mock_val.side_effect = exception.InvalidParameterValue('error')
+            exc = self.assertRaises(messaging.rpc.ExpectedException,
+                                    self.service.inject_nmi,
+                                    self.context, node.uuid)
+            # Compare true exception hidden by @messaging.expected_exceptions
+            self.assertEqual(exception.InvalidParameterValue, exc.exc_info[0])
+
+    def test_inject_nmi_validate_missing_param(self):
+        node = obj_utils.create_test_node(self.context, driver='fake')
+        with mock.patch.object(self.driver.management, 'validate') as mock_val:
+            mock_val.side_effect = exception.MissingParameterValue('error')
+            exc = self.assertRaises(messaging.rpc.ExpectedException,
+                                    self.service.inject_nmi,
+                                    self.context, node.uuid)
+            # Compare true exception hidden by @messaging.expected_exceptions
+            self.assertEqual(exception.MissingParameterValue, exc.exc_info[0])
+
+    def test_inject_nmi_not_implemented(self):
+        node = obj_utils.create_test_node(self.context, driver='fake')
+        exc = self.assertRaises(messaging.rpc.ExpectedException,
+                                self.service.inject_nmi,
+                                self.context, node.uuid)
+        # Compare true exception hidden by @messaging.expected_exceptions
+        self.assertEqual(exception.UnsupportedDriverExtension,
+                         exc.exc_info[0])
 
     def test_get_supported_boot_devices(self):
         node = obj_utils.create_test_node(self.context, driver='fake')
@@ -3604,15 +3876,20 @@ class UpdatePortgroupTestCase(mgr_utils.ServiceSetUpMixin,
 @mgr_utils.mock_record_keepalive
 class RaidTestCases(mgr_utils.ServiceSetUpMixin, tests_db_base.DbTestCase):
 
+    driver_name = 'fake'
+    raid_interface = None
+
     def setUp(self):
         super(RaidTestCases, self).setUp()
         self.node = obj_utils.create_test_node(
-            self.context, driver='fake', provision_state=states.MANAGEABLE)
+            self.context, driver=self.driver_name,
+            raid_interface=self.raid_interface,
+            provision_state=states.MANAGEABLE)
 
     def test_get_raid_logical_disk_properties(self):
         self._start_service()
         properties = self.service.get_raid_logical_disk_properties(
-            self.context, 'fake')
+            self.context, self.driver_name)
         self.assertIn('raid_level', properties)
         self.assertIn('size_gb', properties)
 
@@ -3621,7 +3898,7 @@ class RaidTestCases(mgr_utils.ServiceSetUpMixin, tests_db_base.DbTestCase):
         self._start_service()
         exc = self.assertRaises(messaging.rpc.ExpectedException,
                                 self.service.get_raid_logical_disk_properties,
-                                self.context, 'fake')
+                                self.context, self.driver_name)
         self.assertEqual(exception.UnsupportedDriverExtension, exc.exc_info[0])
 
     def test_set_target_raid_config(self):
@@ -3650,7 +3927,7 @@ class RaidTestCases(mgr_utils.ServiceSetUpMixin, tests_db_base.DbTestCase):
         self.node.refresh()
         self.assertEqual({}, self.node.target_raid_config)
         self.assertEqual(exception.UnsupportedDriverExtension, exc.exc_info[0])
-        self.assertIn('fake', six.text_type(exc.exc_info[1]))
+        self.assertIn(self.driver_name, six.text_type(exc.exc_info[1]))
 
     def test_set_target_raid_config_invalid_parameter_value(self):
         # Missing raid_level in the below raid config.
@@ -3666,6 +3943,40 @@ class RaidTestCases(mgr_utils.ServiceSetUpMixin, tests_db_base.DbTestCase):
         self.node.refresh()
         self.assertEqual({'foo': 'bar'}, self.node.target_raid_config)
         self.assertEqual(exception.InvalidParameterValue, exc.exc_info[0])
+
+
+@mgr_utils.mock_record_keepalive
+class RaidHardwareTypeTestCases(RaidTestCases):
+
+    driver_name = 'fake-hardware'
+    raid_interface = 'fake'
+
+    def test_get_raid_logical_disk_properties_iface_not_supported(self):
+        # NOTE(jroll) we don't run this test as get_logical_disk_properties
+        # is supported on all RAID implementations, and we cannot have a
+        # null interface for a hardware type
+        pass
+
+    def test_set_target_raid_config_iface_not_supported(self):
+        # NOTE(jroll): it's impossible for a dynamic driver to have a null
+        # interface (e.g. node.driver.raid), so this instead tests that
+        # if validation fails, we blow up properly.
+        # need a different raid interface and a hardware type that supports it
+        self.node = obj_utils.create_test_node(
+            self.context, driver='manual-management',
+            raid_interface='no-raid',
+            uuid=uuidutils.generate_uuid(),
+            provision_state=states.MANAGEABLE)
+        raid_config = {'logical_disks': [{'size_gb': 100, 'raid_level': '1'}]}
+
+        exc = self.assertRaises(
+            messaging.rpc.ExpectedException,
+            self.service.set_target_raid_config,
+            self.context, self.node.uuid, raid_config)
+        self.node.refresh()
+        self.assertEqual({}, self.node.target_raid_config)
+        self.assertEqual(exception.UnsupportedDriverExtension, exc.exc_info[0])
+        self.assertIn('manual-management', six.text_type(exc.exc_info[1]))
 
 
 @mock.patch.object(conductor_utils, 'node_power_action')
@@ -4418,7 +4729,8 @@ class ManagerCheckDeployTimeoutsTestCase(mgr_utils.CommonMixIn,
 
 
 @mgr_utils.mock_record_keepalive
-class ManagerTestProperties(tests_db_base.DbTestCase):
+class ManagerTestProperties(mgr_utils.ServiceSetUpMixin,
+                            tests_db_base.DbTestCase):
 
     def setUp(self):
         super(ManagerTestProperties, self).setUp()
@@ -4427,7 +4739,7 @@ class ManagerTestProperties(tests_db_base.DbTestCase):
     def _check_driver_properties(self, driver, expected):
         mgr_utils.mock_the_extension_manager(driver=driver)
         self.driver = driver_factory.get_driver(driver)
-        self.service.init_host()
+        self._start_service()
         properties = self.service.get_driver_properties(self.context, driver)
         self.assertEqual(sorted(expected), sorted(properties.keys()))
 
@@ -4446,11 +4758,6 @@ class ManagerTestProperties(tests_db_base.DbTestCase):
                     ]
         self._check_driver_properties("fake_ipmitool", expected)
 
-    def test_driver_properties_fake_ipminative(self):
-        expected = ['ipmi_address', 'ipmi_password', 'ipmi_username',
-                    'ipmi_terminal_port', 'ipmi_force_boot_device']
-        self._check_driver_properties("fake_ipminative", expected)
-
     def test_driver_properties_fake_ssh(self):
         expected = ['ssh_address', 'ssh_username',
                     'vbox_use_headless', 'ssh_virt_type',
@@ -4462,12 +4769,6 @@ class ManagerTestProperties(tests_db_base.DbTestCase):
         expected = ['deploy_kernel', 'deploy_ramdisk',
                     'deploy_forces_oob_reboot']
         self._check_driver_properties("fake_pxe", expected)
-
-    def test_driver_properties_fake_seamicro(self):
-        expected = ['seamicro_api_endpoint', 'seamicro_password',
-                    'seamicro_server_id', 'seamicro_username',
-                    'seamicro_api_version', 'seamicro_terminal_port']
-        self._check_driver_properties("fake_seamicro", expected)
 
     def test_driver_properties_fake_snmp(self):
         expected = ['snmp_driver', 'snmp_address', 'snmp_port', 'snmp_version',
@@ -4484,13 +4785,6 @@ class ManagerTestProperties(tests_db_base.DbTestCase):
                     'ipmi_force_boot_device', 'deploy_forces_oob_reboot']
         self._check_driver_properties("pxe_ipmitool", expected)
 
-    def test_driver_properties_pxe_ipminative(self):
-        expected = ['ipmi_address', 'ipmi_password', 'ipmi_username',
-                    'deploy_kernel', 'deploy_ramdisk',
-                    'ipmi_terminal_port', 'ipmi_force_boot_device',
-                    'deploy_forces_oob_reboot']
-        self._check_driver_properties("pxe_ipminative", expected)
-
     def test_driver_properties_pxe_ssh(self):
         expected = ['deploy_kernel', 'deploy_ramdisk',
                     'ssh_address', 'ssh_username',
@@ -4499,14 +4793,6 @@ class ManagerTestProperties(tests_db_base.DbTestCase):
                     'ssh_password', 'ssh_port', 'ssh_terminal_port',
                     'deploy_forces_oob_reboot']
         self._check_driver_properties("pxe_ssh", expected)
-
-    def test_driver_properties_pxe_seamicro(self):
-        expected = ['deploy_kernel', 'deploy_ramdisk',
-                    'seamicro_api_endpoint', 'seamicro_password',
-                    'seamicro_server_id', 'seamicro_username',
-                    'seamicro_api_version', 'seamicro_terminal_port',
-                    'deploy_forces_oob_reboot']
-        self._check_driver_properties("pxe_seamicro", expected)
 
     def test_driver_properties_pxe_snmp(self):
         expected = ['deploy_kernel', 'deploy_ramdisk',
@@ -4518,21 +4804,27 @@ class ManagerTestProperties(tests_db_base.DbTestCase):
     def test_driver_properties_fake_ilo(self):
         expected = ['ilo_address', 'ilo_username', 'ilo_password',
                     'client_port', 'client_timeout', 'ilo_change_password',
-                    'ca_file']
+                    'ca_file', 'snmp_auth_user', 'snmp_auth_prot_password',
+                    'snmp_auth_priv_password', 'snmp_auth_protocol',
+                    'snmp_auth_priv_protocol']
         self._check_driver_properties("fake_ilo", expected)
 
     def test_driver_properties_ilo_iscsi(self):
         expected = ['ilo_address', 'ilo_username', 'ilo_password',
                     'client_port', 'client_timeout', 'ilo_deploy_iso',
                     'console_port', 'ilo_change_password',
-                    'deploy_forces_oob_reboot', 'ca_file']
+                    'deploy_forces_oob_reboot', 'ca_file', 'snmp_auth_user',
+                    'snmp_auth_prot_password', 'snmp_auth_priv_password',
+                    'snmp_auth_protocol', 'snmp_auth_priv_protocol']
         self._check_driver_properties("iscsi_ilo", expected)
 
     def test_driver_properties_agent_ilo(self):
         expected = ['ilo_address', 'ilo_username', 'ilo_password',
                     'client_port', 'client_timeout', 'ilo_deploy_iso',
                     'console_port', 'ilo_change_password',
-                    'ca_file']
+                    'ca_file', 'snmp_auth_user', 'snmp_auth_prot_password',
+                    'snmp_auth_priv_password', 'snmp_auth_protocol',
+                    'snmp_auth_priv_protocol']
         self._check_driver_properties("agent_ilo", expected)
 
     def test_driver_properties_fail(self):
@@ -4544,6 +4836,24 @@ class ManagerTestProperties(tests_db_base.DbTestCase):
                                 self.context, "bad-driver")
         # Compare true exception hidden by @messaging.expected_exceptions
         self.assertEqual(exception.DriverNotFound, exc.exc_info[0])
+
+
+@mgr_utils.mock_record_keepalive
+class ManagerTestHardwareTypeProperties(mgr_utils.ServiceSetUpMixin,
+                                        tests_db_base.DbTestCase):
+
+    def _check_hardware_type_properties(self, hardware_type, expected):
+        self.config(enabled_hardware_types=[hardware_type])
+        self.hardware_type = driver_factory.get_hardware_type(hardware_type)
+        self._start_service()
+        properties = self.service.get_driver_properties(self.context,
+                                                        hardware_type)
+        self.assertEqual(sorted(expected), sorted(properties.keys()))
+
+    def test_hardware_type_properties_manual_management(self):
+        expected = ['deploy_kernel', 'deploy_ramdisk',
+                    'deploy_forces_oob_reboot']
+        self._check_hardware_type_properties('manual-management', expected)
 
 
 @mock.patch.object(task_manager, 'acquire')

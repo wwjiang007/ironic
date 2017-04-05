@@ -11,14 +11,19 @@ fi
 OS_AUTH_TOKEN=$(openstack token issue | grep ' id ' | awk '{print $4}')
 IRONIC_URL="http://127.0.0.1:6385"
 
-IRONIC_API_VERSION="1.24"
+IRONIC_API_VERSION="1.31"
 
 export OS_AUTH_TOKEN IRONIC_URL
 
 DOC_CHASSIS_UUID="dff29d23-1ded-43b4-8ae1-5eebb3e30de1"
 DOC_NODE_UUID="6d85703a-565d-469a-96ce-30b6de53079d"
+DOC_DYNAMIC_NODE_UUID="2b045129-a906-46af-bc1a-092b294b3428"
 DOC_PORT_UUID="d2b30520-907d-46c8-bfee-c5586e6fb3a1"
-DOC_PORTGROUP_UUID="e059deab-6e86-40d1-9e70-62d525f16728"
+DOC_PORTGROUP_UUID="e43c722c-248e-4c6e-8ce8-0d8ff129387a"
+DOC_PROVISION_UPDATED_AT="2016-08-18T22:28:49.946416+00:00"
+DOC_CREATED_AT="2016-08-18T22:28:48.643434+11:11"
+DOC_UPDATED_AT="2016-08-18T22:28:49.653974+00:00"
+DOC_IRONIC_CONDUCTOR_HOSTNAME="897ab1dad809"
 
 function GET {
     # GET $RESOURCE
@@ -54,6 +59,27 @@ function PUT {
             ${IRONIC_URL}/$1
 }
 
+function wait_for_node_state {
+    local node="$1"
+    local field="$2"
+    local target_state="$3"
+    local attempt=10
+
+    while [[ $attempt -gt 0 ]]; do
+        res=$(openstack baremetal node show "$node" -f value -c "$field")
+        if [[ "$res" == "$target_state" ]]; then
+            break
+        fi
+        sleep 1
+        attempt=$((attempt - 1))
+        echo "Failed to get node $field == $target_state in $attempt attempts."
+    done
+
+    if [[ $attempt == 0 ]]; then
+        exit 1
+    fi
+}
+
 pushd source/samples
 
 ###########
@@ -66,7 +92,8 @@ GET 'v1' > api-v1-root-response.json
 ###########
 # DRIVER APIs
 GET v1/drivers > drivers-list-response.json
-GET v1/drivers/agent_ipmitool > driver-get-response.json
+GET v1/drivers?detail=true > drivers-list-detail-response.json
+GET v1/drivers/ipmi > driver-get-response.json
 GET v1/drivers/agent_ipmitool/properties > driver-property-response.json
 GET v1/drivers/agent_ipmitool/raid/logical_disk_properties > driver-logical-disk-properties-response.json
 
@@ -99,13 +126,23 @@ PATCH v1/chassis/$CID chassis-update-request.json > chassis-update-response.json
 
 # Create a node with a real driver, but missing ipmi_address,
 # then do basic commands with it
-POST v1/nodes node-create-request.json > node-create-response.json
+POST v1/nodes node-create-request-classic.json > node-create-response.json
 NID=$(cat node-create-response.json | grep '"uuid"' | sed 's/.*"\([0-9a-f\-]*\)",*/\1/')
 if [ "$NID" == "" ]; then
     exit 1
 else
     echo "Node created. UUID: $NID"
 fi
+
+# Also create a node with a dynamic driver for viewing in the node list
+# endpoint
+DNID=$(POST v1/nodes node-create-request-dynamic.json | grep '"uuid"' | sed 's/.*"\([0-9a-f\-]*\)",*/\1/')
+if [ "$DNID" == "" ]; then
+    exit 1
+else
+    echo "Node created. UUID: $DNID"
+fi
+
 
 # get the list of passthru methods from agent* driver
 GET v1/nodes/$NID/vendor_passthru/methods > node-vendor-passthru-response.json
@@ -116,10 +153,14 @@ GET v1/nodes/$NID/vendor_passthru/methods > node-vendor-passthru-response.json
 PATCH v1/nodes/$NID node-update-driver.json
 PUT v1/nodes/$NID/states/provision node-set-manage-state.json
 PUT v1/nodes/$NID/states/provision node-set-available-state.json
+# Wait node to become available
+wait_for_node_state $NID provision_state available
 
 GET v1/nodes/$NID/validate > node-validate-response.json
 
 PUT v1/nodes/$NID/states/power node-set-power-off.json
+# Wait node to reach power off state
+wait_for_node_state $NID power_state "power off"
 GET v1/nodes/$NID/states > node-get-state-response.json
 
 GET v1/nodes > nodes-list-response.json
@@ -167,7 +208,7 @@ else
     echo "Port created. UUID: $PID"
 fi
 
-GET v1/ports > port-list-respone.json
+GET v1/ports > port-list-response.json
 GET v1/ports/detail > port-list-detail-response.json
 PATCH v1/ports/$PID port-update-request.json > port-update-response.json
 
@@ -209,10 +250,23 @@ GET v1/nodes/$NID/management/boot_device/supported > node-get-supported-boot-dev
 PUT v1/nodes/$NID/management/boot_device node-set-boot-device.json
 GET v1/nodes/$NID/management/boot_device > node-get-boot-device-response.json
 
+PUT v1/nodes/$NID/management/inject_nmi node-inject-nmi.json
+
+#############################
+# NODES VIF ATTACH/DETACH API
+
+POST v1/nodes/$NID/vifs node-vif-attach-request.json
+GET v1/nodes/$NID/vifs > node-vif-list-response.json
+
 
 #####################
 # Replace automatically generated UUIDs by already used in documentation
 sed -i "s/$CID/$DOC_CHASSIS_UUID/" *.json
 sed -i "s/$NID/$DOC_NODE_UUID/" *.json
+sed -i "s/$DNID/$DOC_DYNAMIC_NODE_UUID/" *.json
 sed -i "s/$PID/$DOC_PORT_UUID/" *.json
 sed -i "s/$PGID/$DOC_PORTGROUP_UUID/" *.json
+sed -i "s/$(hostname)/$DOC_IRONIC_CONDUCTOR_HOSTNAME/" *.json
+sed -i "s/created_at\": \".*\"/created_at\": \"$DOC_CREATED_AT\"/" *.json
+sed -i "s/updated_at\": \".*\"/updated_at\": \"$DOC_UPDATED_AT\"/" *.json
+sed -i "s/provision_updated_at\": \".*\"/provision_updated_at\": \"$DOC_PROVISION_UPDATED_AT\"/" *.json

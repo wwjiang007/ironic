@@ -10,6 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from six.moves import http_client
+
 from ironic_tempest_plugin.services.baremetal import base
 
 
@@ -37,6 +39,11 @@ class BaremetalClient(base.BaremetalClient):
     def list_ports(self, **kwargs):
         """List all existing ports."""
         return self._list_request('ports', **kwargs)
+
+    @base.handle_errors
+    def list_portgroups(self, **kwargs):
+        """List all existing port groups."""
+        return self._list_request('portgroups', **kwargs)
 
     @base.handle_errors
     def list_node_ports(self, uuid):
@@ -103,6 +110,15 @@ class BaremetalClient(base.BaremetalClient):
         return self._show_request('ports', uuid)
 
     @base.handle_errors
+    def show_portgroup(self, portgroup_ident):
+        """Gets a specific port group.
+
+        :param portgroup_ident: Name or UUID of the port group.
+        :return: Serialized port group as a dictionary.
+        """
+        return self._show_request('portgroups', portgroup_ident)
+
+    @base.handle_errors
     def show_port_by_address(self, address):
         """Gets a specific port by address.
 
@@ -155,6 +171,9 @@ class BaremetalClient(base.BaremetalClient):
         """
         chassis = {'description': kwargs.get('description', 'test-chassis')}
 
+        if 'uuid' in kwargs:
+            chassis.update({'uuid': kwargs.get('uuid')})
+
         return self._create_request('chassis', chassis)
 
     @base.handle_errors
@@ -178,6 +197,30 @@ class BaremetalClient(base.BaremetalClient):
             port['address'] = kwargs['address']
 
         return self._create_request('ports', port)
+
+    @base.handle_errors
+    def create_portgroup(self, node_uuid, **kwargs):
+        """Create a port group with the specified parameters.
+
+        :param node_uuid: The UUID of the node which owns the port group.
+        :param kwargs:
+            address: MAC address of the port group. Optional.
+            extra: Meta data of the port group. Default: {'foo': 'bar'}.
+            name: Name of the port group. Optional.
+            uuid: UUID of the port group. Optional.
+        :return: A tuple with the server response and the created port group.
+        """
+        portgroup = {'extra': kwargs.get('extra', {'foo': 'bar'})}
+
+        portgroup['node_uuid'] = node_uuid
+
+        if kwargs.get('address'):
+            portgroup['address'] = kwargs['address']
+
+        if kwargs.get('name'):
+            portgroup['name'] = kwargs['name']
+
+        return self._create_request('portgroups', portgroup)
 
     @base.handle_errors
     def delete_node(self, uuid):
@@ -210,10 +253,23 @@ class BaremetalClient(base.BaremetalClient):
         return self._delete_request('ports', uuid)
 
     @base.handle_errors
-    def update_node(self, uuid, **kwargs):
+    def delete_portgroup(self, portgroup_ident):
+        """Deletes a port group having the specified UUID or name.
+
+        :param portgroup_ident: Name or UUID of the port group.
+        :return: A tuple with the server response and the response body.
+        """
+        return self._delete_request('portgroups', portgroup_ident)
+
+    @base.handle_errors
+    def update_node(self, uuid, patch=None, **kwargs):
         """Update the specified node.
 
         :param uuid: The unique identifier of the node.
+        :param patch: A JSON path that sets values of the specified attributes
+                      to the new ones.
+        :param **kwargs: Attributes and new values for them, used only when
+                         patch param is not set.
         :return: A tuple with the server response and the updated node.
 
         """
@@ -223,8 +279,8 @@ class BaremetalClient(base.BaremetalClient):
                            'properties/memory_mb',
                            'driver',
                            'instance_uuid')
-
-        patch = self._make_patch(node_attributes, **kwargs)
+        if not patch:
+            patch = self._make_patch(node_attributes, **kwargs)
 
         return self._patch_request('nodes', uuid, patch)
 
@@ -266,7 +322,8 @@ class BaremetalClient(base.BaremetalClient):
                                  target)
 
     @base.handle_errors
-    def set_node_provision_state(self, node_uuid, state, configdrive=None):
+    def set_node_provision_state(self, node_uuid, state, configdrive=None,
+                                 clean_steps=None):
         """Set provision state of the specified node.
 
         :param node_uuid: The unique identifier of the node.
@@ -274,8 +331,15 @@ class BaremetalClient(base.BaremetalClient):
                 (active/rebuild/deleted/inspect/manage/provide).
         :param configdrive: A gzipped, base64-encoded
             configuration drive string.
+        :param clean_steps: A list with clean steps to execute.
         """
-        data = {'target': state, 'configdrive': configdrive}
+        data = {'target': state}
+        # NOTE (vsaienk0): Add both here if specified, do not check anything.
+        # API will return an error in case of invalid parameters.
+        if configdrive is not None:
+            data['configdrive'] = configdrive
+        if clean_steps is not None:
+            data['clean_steps'] = clean_steps
         return self._put_request('nodes/%s/states/provision' % node_uuid,
                                  data)
 
@@ -318,7 +382,7 @@ class BaremetalClient(base.BaremetalClient):
         request = {'boot_device': boot_device, 'persistent': persistent}
         resp, body = self._put_request('nodes/%s/management/boot_device' %
                                        node_uuid, request)
-        self.expected_success(204, resp.status)
+        self.expected_success(http_client.NO_CONTENT, resp.status)
         return body
 
     @base.handle_errors
@@ -330,7 +394,7 @@ class BaremetalClient(base.BaremetalClient):
         """
         path = 'nodes/%s/management/boot_device' % node_uuid
         resp, body = self._list_request(path)
-        self.expected_success(200, resp.status)
+        self.expected_success(http_client.OK, resp.status)
         return body
 
     @base.handle_errors
@@ -342,7 +406,7 @@ class BaremetalClient(base.BaremetalClient):
         """
         path = 'nodes/%s/management/boot_device/supported' % node_uuid
         resp, body = self._list_request(path)
-        self.expected_success(200, resp.status)
+        self.expected_success(http_client.OK, resp.status)
         return body
 
     @base.handle_errors
@@ -354,7 +418,7 @@ class BaremetalClient(base.BaremetalClient):
         """
 
         resp, body = self._show_request('nodes/states/console', node_uuid)
-        self.expected_success(200, resp.status)
+        self.expected_success(http_client.OK, resp.status)
         return resp, body
 
     @base.handle_errors
@@ -370,5 +434,45 @@ class BaremetalClient(base.BaremetalClient):
         enabled = {'enabled': enabled}
         resp, body = self._put_request('nodes/%s/states/console' % node_uuid,
                                        enabled)
-        self.expected_success(202, resp.status)
+        self.expected_success(http_client.ACCEPTED, resp.status)
+        return resp, body
+
+    @base.handle_errors
+    def vif_list(self, node_uuid, api_version=None):
+        """Get list of attached VIFs.
+
+        :param node_uuid: Unique identifier of the node in UUID format.
+        :param api_version: Ironic API version to use.
+        """
+        extra_headers = False
+        headers = None
+        if api_version is not None:
+            extra_headers = True
+            headers = {'x-openstack-ironic-api-version': api_version}
+        return self._list_request('nodes/%s/vifs' % node_uuid,
+                                  headers=headers,
+                                  extra_headers=extra_headers)
+
+    @base.handle_errors
+    def vif_attach(self, node_uuid, vif_id):
+        """Attach a VIF to a node
+
+        :param node_uuid: Unique identifier of the node in UUID format.
+        :param vif_id: An ID representing the VIF
+        """
+        vif = {'id': vif_id}
+        resp = self._create_request_no_response_body(
+            'nodes/%s/vifs' % node_uuid, vif)
+
+        return resp
+
+    @base.handle_errors
+    def vif_detach(self, node_uuid, vif_id):
+        """Detach a VIF from a node
+
+        :param node_uuid: Unique identifier of the node in UUID format.
+        :param vif_id: An ID representing the VIF
+        """
+        resp, body = self._delete_request('nodes/%s/vifs' % node_uuid, vif_id)
+        self.expected_success(http_client.NO_CONTENT, resp.status)
         return resp, body

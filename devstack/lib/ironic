@@ -20,6 +20,10 @@
 # - stop_ironic
 # - cleanup_ironic
 
+# ensure we don't re-source this in the same environment
+[[ -z "$_IRONIC_DEVSTACK_LIB" ]] || return 0
+declare -r -g _IRONIC_DEVSTACK_LIB=1
+
 # Save xtrace and pipefail settings
 _XTRACE_IRONIC=$(set +o | grep xtrace)
 _PIPEFAIL_IRONIC=$(set +o | grep pipefail)
@@ -56,6 +60,12 @@ IRONIC_CONF_DIR=${IRONIC_CONF_DIR:-/etc/ironic}
 IRONIC_CONF_FILE=$IRONIC_CONF_DIR/ironic.conf
 IRONIC_ROOTWRAP_CONF=$IRONIC_CONF_DIR/rootwrap.conf
 IRONIC_POLICY_JSON=$IRONIC_CONF_DIR/policy.json
+if is_suse; then
+    IRONIC_WSGI_DIR=${IRONIC_WSGI_DIR:-/srv/www/htdocs/ironic}
+else
+    IRONIC_WSGI_DIR=${IRONIC_WSGI_DIR:-/var/www/ironic}
+fi
+IRONIC_USE_MOD_WSGI=$(trueorfalse False IRONIC_USE_MOD_WSGI)
 
 # Deploy callback timeout can be changed from its default (1800), if required.
 IRONIC_CALLBACK_TIMEOUT=${IRONIC_CALLBACK_TIMEOUT:-}
@@ -77,7 +87,7 @@ IRONIC_HW_ARCH=${IRONIC_HW_ARCH:-x86_64}
 # 192.168.110.107 00:1e:67:57:50:4c root otc123
 #
 # Supported IRONIC_DEPLOY_DRIVERs:
-# *_ipmitool:
+# *_ipmitool or ipmi:
 #   <BMC address> <MAC address> <BMC username> <BMC password>
 #
 # *_cimc:
@@ -92,19 +102,13 @@ IRONIC_HW_ARCH=${IRONIC_HW_ARCH:-x86_64}
 # *_drac:
 #   <BMC address> <MAC address> <BMC username> <BMC password>
 #
-# IRONIC_IPMIINFO_FILE is deprecated, please use IRONIC_HWINFO_FILE. IRONIC_IPMIINFO_FILE will be removed in Ocata.
-IRONIC_IPMIINFO_FILE=${IRONIC_IPMIINFO_FILE:-""}
-if [ ! -z "$IRONIC_IPMIINFO_FILE" ]; then
-    deprecated "IRONIC_IPMIINFO_FILE is deprecated, please switch to IRONIC_HWINFO_FILE. IRONIC_IPMIINFO_FILE will be removed in Ocata."
-fi
-IRONIC_HWINFO_FILE=${IRONIC_HWINFO_FILE:-${IRONIC_IPMIINFO_FILE:-$IRONIC_DATA_DIR/hardware_info}}
+IRONIC_HWINFO_FILE=${IRONIC_HWINFO_FILE:-$IRONIC_DATA_DIR/hardware_info}
 
 # Set up defaults for functional / integration testing
 IRONIC_NODE_UUID=${IRONIC_NODE_UUID:-`uuidgen`}
 IRONIC_SCRIPTS_DIR=${IRONIC_SCRIPTS_DIR:-$IRONIC_DEVSTACK_DIR/tools/ironic/scripts}
 IRONIC_TEMPLATES_DIR=${IRONIC_TEMPLATES_DIR:-$IRONIC_DEVSTACK_DIR/tools/ironic/templates}
 IRONIC_BAREMETAL_BASIC_OPS=$(trueorfalse False IRONIC_BAREMETAL_BASIC_OPS)
-IRONIC_ENABLED_DRIVERS=${IRONIC_ENABLED_DRIVERS:-fake,pxe_ssh,pxe_ipmitool}
 IRONIC_SSH_USERNAME=${IRONIC_SSH_USERNAME:-`whoami`}
 IRONIC_SSH_TIMEOUT=${IRONIC_SSH_TIMEOUT:-15}
 IRONIC_SSH_ATTEMPTS=${IRONIC_SSH_ATTEMPTS:-5}
@@ -123,8 +127,8 @@ IRONIC_VM_SPECS_CPU_ARCH=${IRONIC_VM_SPECS_CPU_ARCH:-'x86_64'}
 IRONIC_VM_SPECS_DISK=${IRONIC_VM_SPECS_DISK:-10}
 IRONIC_VM_SPECS_DISK_FORMAT=${IRONIC_VM_SPECS_DISK_FORMAT:-qcow2}
 IRONIC_VM_EPHEMERAL_DISK=${IRONIC_VM_EPHEMERAL_DISK:-0}
-IRONIC_VM_EMULATOR=${IRONIC_VM_EMULATOR:-}
-IRONIC_VM_ENGINE=${IRONIC_VM_ENGINE:-}
+IRONIC_VM_EMULATOR=${IRONIC_VM_EMULATOR:-'/usr/bin/qemu-system-x86_64'}
+IRONIC_VM_ENGINE=${IRONIC_VM_ENGINE:-qemu}
 IRONIC_VM_NETWORK_BRIDGE=${IRONIC_VM_NETWORK_BRIDGE:-brbm}
 IRONIC_VM_NETWORK_RANGE=${IRONIC_VM_NETWORK_RANGE:-192.0.2.0/24}
 IRONIC_VM_MACS_CSV_FILE=${IRONIC_VM_MACS_CSV_FILE:-$IRONIC_DATA_DIR/ironic_macs.csv}
@@ -133,10 +137,22 @@ IRONIC_CLEAN_NET_NAME=${IRONIC_CLEAN_NET_NAME:-${IRONIC_PROVISION_NETWORK_NAME:-
 IRONIC_EXTRA_PXE_PARAMS=${IRONIC_EXTRA_PXE_PARAMS:-}
 IRONIC_TTY_DEV=${IRONIC_TTY_DEV:-ttyS0}
 
-# NOTE(vsaienko) nova already pick right libvirt type at
-# https://review.openstack.org/#/c/31177/4/lib/nova@240
-# pick hardware virtualization if possible while it is not set explicitly
-if [[ -z "$IRONIC_VM_ENGINE" ]]; then
+IRONIC_TEMPEST_BUILD_TIMEOUT=${IRONIC_TEMPEST_BUILD_TIMEOUT:-${BUILD_TIMEOUT:-}}
+if [[ -n "$BUILD_TIMEOUT" ]]; then
+    echo "WARNING: BUILD_TIMEOUT variable is renamed to IRONIC_TEMPEST_BUILD_TIMEOUT and will be deprecated in Pike."
+fi
+
+# driver / hardware type options
+IRONIC_ENABLED_DRIVERS=${IRONIC_ENABLED_DRIVERS:-fake,pxe_ipmitool,agent_ipmitool}
+# TODO(jroll) add enabled/default interfaces here
+IRONIC_ENABLED_HARDWARE_TYPES=${IRONIC_ENABLED_HARDWARE_TYPES:-ipmi}
+
+# If IRONIC_VM_ENGING is explictly set to "auto" or "kvm",
+# devstack will attempt to use hardware virtualization
+# (aka nested kvm). We do not enable it in the infra gates
+# because it is not consistently supported/working across
+# all gate infrastructure providers.
+if [[ "$IRONIC_VM_ENGINE" == "auto" ]]; then
     sudo modprobe kvm || true
     if [ ! -e /dev/kvm ]; then
         echo "WARNING: Switching to QEMU"
@@ -149,10 +165,19 @@ if [[ -z "$IRONIC_VM_ENGINE" ]]; then
     fi
 fi
 
+if [[ "$IRONIC_VM_ENGINE" == "kvm" ]]; then
+    # Set this to empty, so configure-vm.py can autodetect location
+    # of KVM binary
+    IRONIC_VM_EMULATOR=""
+fi
+
 # By default, baremetal VMs will console output to file.
 IRONIC_VM_LOG_CONSOLE=$(trueorfalse True IRONIC_VM_LOG_CONSOLE)
 IRONIC_VM_LOG_DIR=${IRONIC_VM_LOG_DIR:-$IRONIC_DATA_DIR/logs/}
 IRONIC_VM_LOG_ROTATE=$(trueorfalse True IRONIC_VM_LOG_ROTATE)
+
+# Set resource_classes for nodes to use Nova's placement engine
+IRONIC_USE_RESOURCE_CLASSES=$(trueorfalse False IRONIC_USE_RESOURCE_CLASSES)
 
 # Whether to build the ramdisk or download a prebuilt one.
 IRONIC_BUILD_DEPLOY_RAMDISK=$(trueorfalse True IRONIC_BUILD_DEPLOY_RAMDISK)
@@ -168,9 +193,9 @@ fi
 
 # If present, these files are used as deploy ramdisk/kernel.
 # (The value must be an absolute path)
-IRONIC_DEPLOY_RAMDISK=${IRONIC_DEPLOY_RAMDISK:-}
-IRONIC_DEPLOY_KERNEL=${IRONIC_DEPLOY_KERNEL:-}
-IRONIC_DEPLOY_ISO=${IRONIC_DEPLOY_ISO:-}
+IRONIC_DEPLOY_RAMDISK=${IRONIC_DEPLOY_RAMDISK:-$TOP_DIR/files/ir-deploy-$IRONIC_DEPLOY_DRIVER.initramfs}
+IRONIC_DEPLOY_KERNEL=${IRONIC_DEPLOY_KERNEL:-$TOP_DIR/files/ir-deploy-$IRONIC_DEPLOY_DRIVER.kernel}
+IRONIC_DEPLOY_ISO=${IRONIC_DEPLOY_ISO:-$TOP_DIR/files/ir-deploy-$IRONIC_DEPLOY_DRIVER.iso}
 
 # These parameters describe which image will be used to provision a node in
 # tempest tests
@@ -179,13 +204,6 @@ if [[ -z "$IRONIC_TEMPEST_WHOLE_DISK_IMAGE" && "$IRONIC_VM_EPHEMERAL_DISK" == 0 
 fi
 
 IRONIC_TEMPEST_WHOLE_DISK_IMAGE=$(trueorfalse False IRONIC_TEMPEST_WHOLE_DISK_IMAGE)
-if [[ -z "$IRONIC_IMAGE_NAME" ]]; then
-    if [[ "$IRONIC_TEMPEST_WHOLE_DISK_IMAGE" == "True" ]]; then
-        IRONIC_IMAGE_NAME=${DEFAULT_IMAGE_NAME/-uec/-disk}
-    else
-        IRONIC_IMAGE_NAME=${DEFAULT_IMAGE_NAME/-disk/-uec}
-    fi
-fi
 
 # NOTE(jroll) this needs to be updated when stable branches are cut
 IPA_DOWNLOAD_BRANCH=${IPA_DOWNLOAD_BRANCH:-master}
@@ -232,16 +250,18 @@ if [[ "$IRONIC_DEPLOY_ISO_REQUIRED" = "True" \
         or set IRONIC_BUILD_DEPLOY_RAMDISK=True to use ISOs"
 fi
 # Which deploy driver to use - valid choices right now
-# are ``pxe_ssh``, ``pxe_ipmitool``, ``agent_ssh``, ``agent_ipmitool`` and ``pxe_snmp``.
+# are ``pxe_ssh``, ``pxe_ipmitool``, ``agent_ssh``, ``agent_ipmitool``,
+# ``pxe_snmp`` and ``ipmi``.
 #
 # Additional valid choices if IRONIC_IS_HARDWARE == true are:
 # ``pxe_iscsi_cimc``, ``pxe_agent_cimc``, ``pxe_ucs``, ``pxe_cimc``,
 # ``*_pxe_oneview`` and ``pxe_drac``
-IRONIC_DEPLOY_DRIVER=${IRONIC_DEPLOY_DRIVER:-pxe_ssh}
+IRONIC_DEPLOY_DRIVER=${IRONIC_DEPLOY_DRIVER:-pxe_ipmitool}
 
 # If the requested driver is not yet enable, enable it, if it is not it will fail anyway
-if [[ -z "$(echo ${IRONIC_ENABLED_DRIVERS} | grep -w ${IRONIC_DEPLOY_DRIVER})" ]]; then
-    IRONIC_ENABLED_DRIVERS=${IRONIC_ENABLED_DRIVERS},${IRONIC_DEPLOY_DRIVER}
+if [[ -z "$(echo ${IRONIC_ENABLED_DRIVERS},${IRONIC_ENABLED_HARDWARE_TYPES} | grep -w ${IRONIC_DEPLOY_DRIVER})" ]]; then
+    die "The deploy driver $IRONIC_DEPLOY_DRIVER is not in the list of enabled \
+        drivers $IRONIC_ENABLED_DRIVERS or hardware types $IRONIC_ENABLED_HARDWARE_TYPES"
 fi
 
 # Support entry points installation of console scripts
@@ -363,6 +383,13 @@ IRONIC_DEPLOY_LOGS_STORAGE_BACKEND=${IRONIC_DEPLOY_LOGS_STORAGE_BACKEND:-local}
 # The path to the directory where Ironic should put the logs when IRONIC_DEPLOY_LOGS_STORAGE_BACKEND is set to "local"
 IRONIC_DEPLOY_LOGS_LOCAL_PATH=${IRONIC_DEPLOY_LOGS_LOCAL_PATH:-$IRONIC_VM_LOG_DIR/deploy_logs}
 
+
+# Define baremetal min_microversion in tempest config. Default value None is picked from tempest.
+TEMPEST_BAREMETAL_MIN_MICROVERSION=${TEMPEST_BAREMETAL_MIN_MICROVERSION:-}
+
+# Define baremetal max_microversion in tempest config. No default value means that it is picked from tempest.
+TEMPEST_BAREMETAL_MAX_MICROVERSION=${TEMPEST_BAREMETAL_MAX_MICROVERSION:-}
+
 # get_pxe_boot_file() - Get the PXE/iPXE boot file path
 function get_pxe_boot_file {
     local pxe_boot_file
@@ -394,9 +421,65 @@ IRONIC_PXE_BOOT_IMAGE=${IRONIC_PXE_BOOT_IMAGE:-$(get_pxe_boot_file)}
 
 IRONIC_AUTOMATED_CLEAN_ENABLED=$(trueorfalse True IRONIC_AUTOMATED_CLEAN_ENABLED)
 
+# Whether configure the nodes to boot in Legacy BIOS or UEFI mode. Accepted
+# values are: "bios" or "uefi", defaults to "bios".
+#
+# WARNING: UEFI is EXPERIMENTAL. The CirrOS images uploaded by DevStack by
+# default WILL NOT WORK with UEFI. You will need to download the UEFI capable
+# images manually from [0] and upload it to Glance before deploying.
+IRONIC_BOOT_MODE=${IRONIC_BOOT_MODE:-bios}
+IRONIC_UEFI_FILES_DIR=${IRONIC_UEFI_FILES_DIR:-/var/lib/libvirt/images}
+UEFI_LOADER_PATH=$IRONIC_UEFI_FILES_DIR/OVMF_CODE.fd
+UEFI_NVRAM_PATH=$IRONIC_UEFI_FILES_DIR/OVMF_VARS.fd
+
+# Sanity checks
+if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+    if [[ "$IRONIC_IPXE_ENABLED" == "False" ]]; then
+        die $LINENO "Boot mode UEFI is only supported when used with iPXE for now."
+    fi
+
+    if ! is_fedora && ! is_ubuntu; then
+        die $LINENO "Boot mode UEFI only works in Ubuntu or Fedora for now."
+    fi
+fi
 
 # Functions
 # ---------
+
+# UEFI related functions
+function get_uefi_ipxe_boot_file {
+    if is_ubuntu; then
+        echo /usr/lib/ipxe/ipxe.efi
+    elif is_fedora; then
+        echo /usr/share/ipxe/ipxe-x86_64.efi
+    fi
+}
+
+function get_uefi_loader {
+    if is_ubuntu; then
+        echo /usr/share/OVMF/OVMF_CODE.fd
+    elif is_fedora; then
+        echo /usr/share/edk2/ovmf/OVMF_CODE.fd
+    fi
+}
+
+function get_uefi_nvram {
+    if is_ubuntu; then
+        echo /usr/share/OVMF/OVMF_VARS.fd
+    elif is_fedora; then
+        echo /usr/share/edk2/ovmf/OVMF_VARS.fd
+    fi
+}
+
+# Misc
+
+function restart_libvirt {
+    local libvirt_service_name="libvirtd"
+    if is_ubuntu && [ ! -f /etc/init.d/libvirtd ]; then
+        libvirt_service_name="libvirt-bin"
+    fi
+    restart_service $libvirt_service_name
+}
 
 # Test if any Ironic services are enabled
 # is_ironic_enabled
@@ -411,7 +494,7 @@ function is_deployed_by_agent {
 }
 
 function is_deployed_by_ipmitool {
-    [[ -z "${IRONIC_DEPLOY_DRIVER##*_ipmitool}" ]] && return 0
+    [[ "$IRONIC_DEPLOY_DRIVER" == ipmi || -z "${IRONIC_DEPLOY_DRIVER##*_ipmitool}" ]] && return 0
     return 1
 }
 
@@ -444,6 +527,11 @@ function is_deployed_by_snmp {
     return 1
 }
 
+function is_drac_enabled {
+    [[ -z "${IRONIC_ENABLED_DRIVERS##*_drac}" ]] && return 0
+    return 1
+}
+
 function is_glance_configuration_required {
     is_deployed_by_agent || [[ "$IRONIC_CONFIGURE_GLANCE_WITH_SWIFT" == "True" ]] && return 0
     return 1
@@ -453,6 +541,50 @@ function is_deploy_iso_required {
     [[ "$IRONIC_IS_HARDWARE" == "True" && "$IRONIC_DEPLOY_ISO_REQUIRED" == "True" ]] && return 0
     return 1
 }
+
+IRONIC_DEFAULT_IMAGE_NAME=cirros-${CIRROS_VERSION}-x86_64-uec
+if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+    IRONIC_DEFAULT_IMAGE_NAME=cirros-d160722-x86_64-uec
+fi
+
+IRONIC_IMAGE_NAME=${DEFAULT_IMAGE_NAME:-$IRONIC_DEFAULT_IMAGE_NAME}
+
+# Add link to download queue, ignore if already exist.
+# TODO(vsaienko) Move to devstack https://review.openstack.org/420656
+function add_image_link {
+    local i_link="$1"
+    if ! [[ "$IMAGE_URLS"  =~ "$i_link" ]]; then
+        if [[ -z "$IMAGE_URLS" || "${IMAGE_URLS: -1}" == "," ]]; then
+            IMAGE_URLS+="$i_link"
+        else
+            IMAGE_URLS+=",$i_link"
+        fi
+    fi
+}
+
+if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+    add_image_link http://download.cirros-cloud.net/daily/20160722/cirros-d160722-x86_64-uec.tar.gz
+    add_image_link http://download.cirros-cloud.net/daily/20160722/cirros-d160722-x86_64-disk.img
+else
+    # NOTE (vsaienko) We are going to test mixed drivers/partitions in single setup.
+    # Do not restrict downloading image only for specific case. Download both disk and uec images.
+    add_image_link http://download.cirros-cloud.net/${CIRROS_VERSION}/cirros-${CIRROS_VERSION}-x86_64-uec.tar.gz
+    add_image_link http://download.cirros-cloud.net/${CIRROS_VERSION}/cirros-${CIRROS_VERSION}-x86_64-disk.img
+fi
+
+
+IRONIC_WHOLEDISK_IMAGE_NAME=${IRONIC_WHOLEDISK_IMAGE_NAME:-${IRONIC_IMAGE_NAME/-uec/-disk}}
+IRONIC_PARTITIONED_IMAGE_NAME=${IRONIC_PARTITIONED_IMAGE_NAME:-${IRONIC_IMAGE_NAME/-disk/-uec}}
+
+if [[ "$IRONIC_TEMPEST_WHOLE_DISK_IMAGE" == "True" ]]; then
+    IRONIC_IMAGE_NAME=$IRONIC_WHOLEDISK_IMAGE_NAME
+else
+    IRONIC_IMAGE_NAME=$IRONIC_PARTITIONED_IMAGE_NAME
+fi
+
+# NOTE(vsaienko) set DEFAULT_IMAGE_NAME here, as it is still used by grenade
+# https://github.com/openstack-dev/grenade/blob/90c4ead2f2a7ed48c873c51cef415b83d655752e/projects/60_nova/resources.sh#L31
+export DEFAULT_IMAGE_NAME=$IRONIC_IMAGE_NAME
 
 # Syslinux >= 5.00 pxelinux.0 binary is not "stand-alone" anymore,
 # it depends on some c32 modules to work correctly.
@@ -483,7 +615,7 @@ function setup_virtualbmc {
         git_clone_by_name "virtualbmc"
         setup_dev_lib "virtualbmc"
     else
-        pip_install "virtualbmc"
+        pip_install_gr "virtualbmc"
     fi
 
     if [[ ! -d $(dirname $IRONIC_VBMC_CONFIG_FILE) ]]; then
@@ -522,7 +654,7 @@ function _generate_pdu_ports {
     port_config=()
     for vm_name in $(_ironic_bm_vm_names); do
         port_config+=("${pdu_port_number}:${vm_name}")
-        (( pdu_port_number++ ))
+        pdu_port_number=$(( pdu_port_number + 1 ))
     done
     echo ${port_config[*]} | tr ' ' ','
 }
@@ -533,7 +665,7 @@ function install_ironic {
     if [[ "$HOST_TOPOLOGY_ROLE" != "subnode" ]]; then
         # make sure all needed service were enabled
         local req_services="key"
-        if [[ "$VIRT_DRIVER" == "ironic" ]]; then
+        if is_service_enabled nova && [[ "$VIRT_DRIVER" == "ironic" ]]; then
             req_services+=" nova glance neutron"
         fi
         for srv in $req_services; do
@@ -550,8 +682,37 @@ function install_ironic {
 
     setup_develop $IRONIC_DIR
 
-    if [[ "$IRONIC_IPXE_ENABLED" == "True" ]] ; then
+    if [[ "$IRONIC_USE_MOD_WSGI" == "True" || "$IRONIC_IPXE_ENABLED" == "True" ]]; then
         install_apache_wsgi
+    fi
+
+    if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+
+        # Append the nvram configuration to libvirt if it's not present already
+        if ! sudo grep -q "^nvram" /etc/libvirt/qemu.conf; then
+            echo "nvram=[\"$UEFI_LOADER_PATH:$UEFI_NVRAM_PATH\"]" | sudo tee -a /etc/libvirt/qemu.conf
+        fi
+
+        # Replace the default virtio PXE ROM in QEMU with an EFI capable
+        # one. The EFI ROM should work on with both boot modes, Legacy
+        # BIOS and UEFI.
+        if is_ubuntu; then
+            # FIXME(lucasagomes): Enable the multiverse repository by
+            # default in the image running the gate tests. Also move the
+            # installation of the ovmf package to files/debs/ironic
+            sudo add-apt-repository "deb http://archive.ubuntu.com/ubuntu $(lsb_release -sc) multiverse"
+            sudo apt-get update
+            install_package ovmf
+
+            sudo rm /usr/share/qemu/pxe-virtio.rom
+            sudo ln -s /usr/lib/ipxe/qemu/efi-virtio.rom /usr/share/qemu/pxe-virtio.rom
+        elif is_fedora; then
+            sudo rm /usr/share/qemu/pxe-virtio.rom
+            sudo ln -s /usr/share/ipxe.efi/1af41000.rom /usr/share/qemu/pxe-virtio.rom
+        fi
+
+        # Restart libvirt to the changes to take effect
+        restart_libvirt
     fi
 
     if is_deployed_by_ipmitool && [[ "$IRONIC_IS_HARDWARE" == "False" ]]; then
@@ -560,6 +721,10 @@ function install_ironic {
 
     if is_deployed_by_snmp && [[ "$IRONIC_IS_HARDWARE" == "False" ]]; then
         setup_virtualpdu
+    fi
+
+    if is_drac_enabled; then
+        pip_install python-dracclient
     fi
 }
 
@@ -578,21 +743,43 @@ function install_ironicclient {
 # _cleanup_ironic_apache_wsgi() - Remove wsgi files, disable and remove apache vhost file
 function _cleanup_ironic_apache_wsgi {
     sudo rm -rf $IRONIC_HTTP_DIR
-    disable_apache_site ironic
-    sudo rm -f $(apache_site_config_for ironic)
+    sudo rm -rf $IRONIC_WSGI_DIR
+    disable_apache_site ironic-api
+    disable_apache_site ipxe-ironic
+    sudo rm -f $(apache_site_config_for ironic-api)
+    sudo rm -f $(apache_site_config_for ipxe-ironic)
     restart_apache_server
 }
 
 # _config_ironic_apache_wsgi() - Set WSGI config files of Ironic
 function _config_ironic_apache_wsgi {
     local ironic_apache_conf
-    ironic_apache_conf=$(apache_site_config_for ironic)
-    sudo cp $IRONIC_DEVSTACK_FILES_DIR/apache-ironic.template $ironic_apache_conf
-    sudo sed -e "
-        s|%PUBLICPORT%|$IRONIC_HTTP_PORT|g;
-        s|%HTTPROOT%|$IRONIC_HTTP_DIR|g;
-    " -i $ironic_apache_conf
-    enable_apache_site ironic
+    local ipxe_apache_conf
+    if [[ "$IRONIC_USE_MOD_WSGI" == "True" ]]; then
+        sudo mkdir -p $IRONIC_WSGI_DIR
+        sudo cp $IRONIC_DIR/ironic/api/app.wsgi $IRONIC_WSGI_DIR/app.wsgi
+        ironic_apache_conf=$(apache_site_config_for ironic-api)
+        sudo cp $IRONIC_DEVSTACK_FILES_DIR/apache-ironic-api.template $ironic_apache_conf
+        sudo sed -e "
+            s|%IRONIC_SERVICE_PORT%|$IRONIC_SERVICE_PORT|g;
+            s|%IRONIC_WSGI_DIR%|$IRONIC_WSGI_DIR|g;
+            s|%USER%|$STACK_USER|g;
+            s|%APIWORKERS%|$API_WORKERS|g;
+            s|%APACHE_NAME%|$APACHE_NAME|g;
+        " -i $ironic_apache_conf
+        enable_apache_site ironic-api
+        tail_log ir-access /var/log/$APACHE_NAME/ironic-api-access.log
+        tail_log ir-api /var/log/$APACHE_NAME/ironic-api.log
+    fi
+    if [[ "$IRONIC_IPXE_ENABLED" == "True" ]]; then
+        ipxe_apache_conf=$(apache_site_config_for ipxe-ironic)
+        sudo cp $IRONIC_DEVSTACK_FILES_DIR/apache-ipxe-ironic.template $ipxe_apache_conf
+        sudo sed -e "
+            s|%PUBLICPORT%|$IRONIC_HTTP_PORT|g;
+            s|%HTTPROOT%|$IRONIC_HTTP_DIR|g;
+        " -i $ipxe_apache_conf
+        enable_apache_site ipxe-ironic
+    fi
 }
 
 # cleanup_ironic_config_files() - Remove residual cache/config/log files,
@@ -607,9 +794,7 @@ function cleanup_ironic {
     cleanup_ironic_config_files
 
     # Cleanup the WSGI files
-    if [[ "$IRONIC_IPXE_ENABLED" == "True" ]] ; then
-        _cleanup_ironic_apache_wsgi
-    fi
+    _cleanup_ironic_apache_wsgi
 
     # Remove the hook to disable log rotate
     sudo rm -rf $IRONIC_LIBVIRT_HOOKS_PATH/qemu
@@ -622,7 +807,7 @@ function configure_ironic_dirs {
         $IRONIC_STATE_PATH $IRONIC_TFTPBOOT_DIR $IRONIC_TFTPBOOT_DIR/pxelinux.cfg
     sudo chown -R $STACK_USER:$LIBVIRT_GROUP $IRONIC_TFTPBOOT_DIR
 
-    if [[ "$IRONIC_IPXE_ENABLED" == "True" ]] ; then
+    if [[ "$IRONIC_IPXE_ENABLED" == "True" ]]; then
         sudo install -d -o $STACK_USER -g $LIBVIRT_GROUP $IRONIC_HTTP_DIR
     fi
 
@@ -634,9 +819,28 @@ function configure_ironic_dirs {
     cp $IRONIC_PXE_BOOT_IMAGE $IRONIC_TFTPBOOT_DIR
     setup_syslinux_modules
 
+    if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+        local uefi_ipxe_boot_file
+        local uefi_loader
+        local uefi_nvram
+
+        uefi_ipxe_boot_file=$(get_uefi_ipxe_boot_file)
+        if [ ! -f $uefi_ipxe_boot_file ]; then
+            die $LINENO "iPXE UEFI boot file $uefi_pxe_bootfile_name not found."
+        fi
+
+        cp $uefi_ipxe_boot_file $IRONIC_TFTPBOOT_DIR
+
+        # Copy the OVMF images to libvirt's path
+        uefi_loader=$(get_uefi_loader)
+        uefi_nvram=$(get_uefi_nvram)
+        sudo cp $uefi_loader $UEFI_LOADER_PATH
+        sudo cp $uefi_nvram $UEFI_NVRAM_PATH
+    fi
+
     # Create the logs directory when saving the deploy logs to the filesystem
-    if [ "$IRONIC_DEPLOY_LOGS_STORAGE_BACKEND" = "local"] && [ "$IRONIC_DEPLOY_LOGS_COLLECT" != "never" ]; then
-        sudo install -d -o $STACK_USER $IRONIC_DEPLOY_LOGS_LOCAL_PATH
+    if [[ "$IRONIC_DEPLOY_LOGS_STORAGE_BACKEND" == "local" && "$IRONIC_DEPLOY_LOGS_COLLECT" != "never" ]]; then
+        install -d -o $STACK_USER $IRONIC_DEPLOY_LOGS_LOCAL_PATH
     fi
 }
 
@@ -694,6 +898,7 @@ function configure_ironic_provision_network {
     # othervise assign ip to br interface directly.
     if [[ "$IRONIC_PROVISION_PROVIDER_NETWORK_TYPE" == "vlan" ]]; then
         sudo ip link add link $OVS_PHYSICAL_BRIDGE name $OVS_PHYSICAL_BRIDGE.$IRONIC_PROVISION_SEGMENTATION_ID type vlan id $IRONIC_PROVISION_SEGMENTATION_ID
+        sudo ip link set dev $OVS_PHYSICAL_BRIDGE up
         sudo ip link set dev $OVS_PHYSICAL_BRIDGE.$IRONIC_PROVISION_SEGMENTATION_ID up
         sudo ip addr add dev $OVS_PHYSICAL_BRIDGE.$IRONIC_PROVISION_SEGMENTATION_ID $ironic_provision_network_ip/$provision_net_prefix
     else
@@ -747,8 +952,22 @@ function configure_ironic {
         setup_colorized_logging $IRONIC_CONF_FILE DEFAULT tenant user
     fi
 
-    if [[ "$IRONIC_IPXE_ENABLED" == "True" ]]; then
+    # Adds WSGI for Ironic API
+    if [[ "$IRONIC_USE_MOD_WSGI" == "True" || "$IRONIC_IPXE_ENABLED" == "True" ]]; then
         _config_ironic_apache_wsgi
+    fi
+
+    # NOTE(vsaienko) Add stack to libvirt group when installing without nova.
+    if ! is_service_enabled nova; then
+        if [[ "$os_VENDOR" =~ (Debian) ]]; then
+            LIBVIRT_GROUP=libvirt
+        else
+            LIBVIRT_GROUP=libvirtd
+        fi
+        if ! getent group $LIBVIRT_GROUP >/dev/null; then
+            sudo groupadd $LIBVIRT_GROUP
+        fi
+        add_user_to_group $STACK_USER $LIBVIRT_GROUP
     fi
 }
 
@@ -809,8 +1028,11 @@ function configure_ironic_conductor {
     sudo chown root:root $tempfile
     sudo mv $tempfile /etc/sudoers.d/ironic-rootwrap
 
-    iniset $IRONIC_CONF_FILE DEFAULT rootwrap_config $IRONIC_ROOTWRAP_CONF
+    # set up drivers / hardware types
     iniset $IRONIC_CONF_FILE DEFAULT enabled_drivers $IRONIC_ENABLED_DRIVERS
+    iniset $IRONIC_CONF_FILE DEFAULT enabled_hardware_types $IRONIC_ENABLED_HARDWARE_TYPES
+
+    iniset $IRONIC_CONF_FILE DEFAULT rootwrap_config $IRONIC_ROOTWRAP_CONF
     iniset $IRONIC_CONF_FILE conductor api_url $IRONIC_SERVICE_PROTOCOL://$SERVICE_HOST:$IRONIC_SERVICE_PORT
     if [[ -n "$IRONIC_CALLBACK_TIMEOUT" ]]; then
         iniset $IRONIC_CONF_FILE conductor deploy_callback_timeout $IRONIC_CALLBACK_TIMEOUT
@@ -880,9 +1102,12 @@ function configure_ironic_conductor {
     if [[ "$IRONIC_IPXE_ENABLED" == "True" ]] ; then
         local pxebin
         pxebin=`basename $IRONIC_PXE_BOOT_IMAGE`
+        uefipxebin=`basename $(get_uefi_ipxe_boot_file)`
         iniset $IRONIC_CONF_FILE pxe ipxe_enabled True
-        iniset $IRONIC_CONF_FILE pxe pxe_config_template '\$pybasedir/drivers/modules/ipxe_config.template'
+        iniset $IRONIC_CONF_FILE pxe pxe_config_template '$pybasedir/drivers/modules/ipxe_config.template'
         iniset $IRONIC_CONF_FILE pxe pxe_bootfile_name $pxebin
+        iniset $IRONIC_CONF_FILE pxe uefi_pxe_config_template '$pybasedir/drivers/modules/ipxe_config.template'
+        iniset $IRONIC_CONF_FILE pxe uefi_pxe_bootfile_name $uefipxebin
         iniset $IRONIC_CONF_FILE deploy http_root $IRONIC_HTTP_DIR
         iniset $IRONIC_CONF_FILE deploy http_url "http://$IRONIC_HTTP_SERVER:$IRONIC_HTTP_PORT"
         if [[ "$IRONIC_IPXE_USE_SWIFT" == "True" ]]; then
@@ -995,7 +1220,11 @@ function start_ironic {
 # start_ironic_api() - Used by start_ironic().
 # Starts Ironic API server.
 function start_ironic_api {
-    run_process ir-api "$IRONIC_BIN_DIR/ironic-api --config-file=$IRONIC_CONF_FILE"
+    if [[ "$IRONIC_USE_MOD_WSGI" == "True" ]]; then
+        restart_apache_server
+    else
+        run_process ir-api "$IRONIC_BIN_DIR/ironic-api --config-file=$IRONIC_CONF_FILE"
+    fi
     echo "Waiting for ir-api ($IRONIC_HOSTPORT) to start..."
     if ! timeout $SERVICE_TIMEOUT sh -c "while ! wget --no-proxy -q -O- $IRONIC_SERVICE_PROTOCOL://$IRONIC_HOSTPORT; do sleep 1; done"; then
         die $LINENO "ir-api did not start"
@@ -1017,7 +1246,11 @@ function start_virtualpdu {
 
 # stop_ironic() - Stop running processes
 function stop_ironic {
-    stop_process ir-api
+    if [[ "$IRONIC_USE_MOD_WSGI" == "True" ]]; then
+        disable_apache_site ironic-api
+    else
+        stop_process ir-api
+    fi
     stop_process ir-cond
 }
 
@@ -1075,25 +1308,41 @@ function create_ovs_taps {
 }
 
 function setup_qemu_log_hook {
-    local libvirt_service_name
-
     # Make sure the libvirt hooks directory exist
     sudo mkdir -p $IRONIC_LIBVIRT_HOOKS_PATH
 
     # Copy the qemu hook to the right directory
-    sudo cp $IRONIC_DEVSTACK_FILES_DIR/hooks/qemu $IRONIC_LIBVIRT_HOOKS_PATH/qemu
+    sudo cp $IRONIC_DEVSTACK_FILES_DIR/hooks/qemu.py $IRONIC_LIBVIRT_HOOKS_PATH/qemu
     sudo chmod -v +x $IRONIC_LIBVIRT_HOOKS_PATH/qemu
     sudo sed -e "
         s|%LOG_DIR%|$IRONIC_VM_LOG_DIR|g;
     " -i $IRONIC_LIBVIRT_HOOKS_PATH/qemu
 
-    # Restart the libvirt daemon
-    libvirt_service_name="libvirt-bin"
-    if is_fedora; then
-        libvirt_service_name="libvirtd"
-    fi
+    restart_libvirt
+    mkdir -p $IRONIC_VM_LOG_DIR
+    cat >${IRONIC_VM_LOG_DIR}/README << EOF
+This directory contains the serial console log files from the virtual Ironic
+bare-metal nodes. The *_console_* log files are the original log files and
+include ANSI control codes which can make the output difficult to read. The
+*_no_ansi_* log files have had ANSI control codes removed from the file and are
+easier to read.
 
-    restart_service $libvirt_service_name
+On some occasions there won't be a corresponding *_no_ansi_* log file, for
+example if the job failed due to a time-out. You may see a log file without a
+date/time in the file name. In that case you can display the logfile in your
+console by doing:
+   $ curl URL_TO_LOGFILE
+
+This will have your terminal process the ANSI escape codes.
+
+Another option, if you have the 'pv' executable installed, is to simulate a
+low-speed connection.  In this example simulate a 300 Bytes/second connection.
+   $ curl URL_TO_LOGFILE | pv -q -L 300
+
+This can allow you to see some of the content before the screen is cleared by
+an ANSI escape sequence.
+
+EOF
 }
 
 function create_bridge_and_vms {
@@ -1117,6 +1366,10 @@ function create_bridge_and_vms {
         vm_opts+=" -e $IRONIC_VM_EMULATOR"
     fi
     vm_opts+=" -E $IRONIC_VM_ENGINE"
+
+    if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+        vm_opts+=" -L $UEFI_LOADER_PATH -N $UEFI_NVRAM_PATH"
+    fi
 
     for vm_name in $(_ironic_bm_vm_names); do
         sudo -E su $STACK_USER -c "$IRONIC_SCRIPTS_DIR/create-node.sh -n $vm_name \
@@ -1149,6 +1402,8 @@ function create_bridge_and_vms {
 }
 
 function wait_for_nova_resources {
+    # TODO(jroll) if IRONIC_USE_RESOURCE_CLASSES, use the placement engine instead
+
     # After nodes have been enrolled, we need to wait for both ironic and
     # nova's periodic tasks to populate the resource tracker with available
     # nodes and resources. Wait up to 2 minutes for a given resource before
@@ -1227,7 +1482,13 @@ function enroll_nodes {
 
     local total_nodes=0
     local total_cpus=0
+
     while read hardware_info; do
+        local node_capabilities=""
+        if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+            node_capabilities+=" -p capabilities=boot_mode:uefi"
+        fi
+
         if [[ "$IRONIC_IS_HARDWARE" == "False" ]]; then
             local mac_address
             mac_address=$(echo $hardware_info | awk '{print $1}')
@@ -1305,14 +1566,19 @@ function enroll_nodes {
                 if [[ "$dynamic_allocation" == "True" ]]; then
                     node_options+=" -i dynamic_allocation=$dynamic_allocation"
                 fi
-                node_options+=" -p capabilities="
-                node_options+="server_hardware_type_uri:$server_hardware_type_uri,"
-                node_options+="enclosure_group_uri:$enclosure_group_uri,"
-                node_options+="server_profile_template_uri:$server_profile_template_uri"
+
+                if [[ "$node_capabilities" ]]; then
+                    node_capabilities+=","
+                else
+                    node_capabilities+=" -p capabilities="
+                fi
+                node_capabilities+="server_hardware_type_uri:$server_hardware_type_uri,"
+                node_capabilities+="enclosure_group_uri:$enclosure_group_uri,"
+                node_capabilities+="server_profile_template_uri:$server_profile_template_uri"
             elif is_deployed_by_ilo; then
                 node_options+=" -i ilo_address=$bmc_address -i ilo_password=$bmc_passwd\
                     -i ilo_username=$bmc_username"
-                if [[ $IRONIC_DEPLOY_DRIVER -ne "pxe_ilo" ]]; then
+                if [[ $IRONIC_DEPLOY_DRIVER != "pxe_ilo" ]]; then
                     node_options+=" -i ilo_deploy_iso=$IRONIC_DEPLOY_ISO_ID"
                 fi
             elif is_deployed_by_drac; then
@@ -1329,7 +1595,8 @@ function enroll_nodes {
         fi
 
         local node_id
-        node_id=$(ironic node-create $standalone_node_uuid\
+        node_id=$(ironic \
+            node-create $standalone_node_uuid \
             --chassis_uuid $chassis_id \
             --driver $IRONIC_DEPLOY_DRIVER \
             --name $node_prefix-$total_nodes \
@@ -1337,6 +1604,7 @@ function enroll_nodes {
             -p memory_mb=$ironic_node_ram\
             -p local_gb=$ironic_node_disk\
             -p cpu_arch=$ironic_node_arch \
+            $node_capabilities \
             $node_options \
             | grep " uuid " | get_field 2)
 
@@ -1362,16 +1630,31 @@ function enroll_nodes {
             ironic node-set-maintenance $node_id false
         fi
 
+        local resource_class
+        if [[ "$IRONIC_USE_RESOURCE_CLASSES" == "True" ]]; then
+            # TODO(jroll) consider making this configurable, for now just make it unique per hardware combo
+            # this will look like baremetal_1cpu_256mbram_10gbdisk
+            resource_class="baremetal_${ironic_node_cpu}cpu_${ironic_node_ram}mbram_${ironic_node_disk}gbdisk"
+            openstack --os-baremetal-api-version 1.21 baremetal node set \
+                --resource-class $resource_class $node_id
+        fi
+
         total_nodes=$((total_nodes+1))
         total_cpus=$((total_cpus+$ironic_node_cpu))
     done < $ironic_hwinfo_file
 
-    if [[ "$HOST_TOPOLOGY_ROLE" != 'subnode' ]]; then
-        if [ "$VIRT_DRIVER" == "ironic" ]; then
+    if is_service_enabled nova && [[ "$VIRT_DRIVER" == "ironic" ]]; then
+        if [[ "$HOST_TOPOLOGY_ROLE" != 'subnode' ]]; then
             local adjusted_disk
             adjusted_disk=$(($ironic_node_disk - $ironic_ephemeral_disk))
+            # TODO(jroll) use (yet to be defined) new-style flavor here,
+            # if IRONIC_USE_RESOURCE_CLASSES == True
             openstack flavor create --ephemeral $ironic_ephemeral_disk --ram $ironic_node_ram --disk $adjusted_disk --vcpus $ironic_node_cpu baremetal
             openstack flavor set baremetal --property "cpu_arch"="$ironic_node_arch"
+
+            if [[ "$IRONIC_BOOT_MODE" == "uefi" ]]; then
+                openstack flavor set baremetal --property "capabilities:boot_mode"="uefi"
+            fi
 
             # NOTE(dtantsur): sometimes nova compute fails to start with ironic due
             # to keystone restarting and not being able to authenticate us.
@@ -1381,16 +1664,32 @@ function enroll_nodes {
             # that was created will fail the service_check in the end of the deployment
             _clean_ncpu_failure
             start_nova_compute
-            wait_for_nova_resources "count" $total_nodes
-            wait_for_nova_resources "vcpus" $total_cpus
+        else
+            # NOTE(vsaienko) we enrolling IRONIC_VM_COUNT on each node. So on subnode
+            # we expect to have 2 x total_cpus
+            total_nodes=$(( total_nodes * 2 ))
+            total_cpus=$(( total_cpus * 2 ))
         fi
+        wait_for_nova_resources "count" $total_nodes
+        wait_for_nova_resources "vcpus" $total_cpus
+    fi
+}
+
+function die_if_module_not_loaded {
+    if ! grep -q $1 /proc/modules; then
+        die $LINENO "$1 kernel module is not loaded"
     fi
 }
 
 function configure_iptables {
     # enable tftp natting for allowing connections to HOST_IP's tftp server
-    sudo modprobe nf_conntrack_tftp
-    sudo modprobe nf_nat_tftp
+    if ! running_in_container; then
+        sudo modprobe nf_conntrack_tftp
+        sudo modprobe nf_nat_tftp
+    else
+        die_if_module_not_loaded nf_conntrack_tftp
+        die_if_module_not_loaded nf_nat_tftp
+    fi
     # explicitly allow DHCP - packets are occasionally being dropped here
     sudo iptables -I INPUT -p udp --dport 67:68 --sport 67:68 -j ACCEPT || true
     # nodes boot from TFTP and callback to the API server listening on $HOST_IP
@@ -1572,38 +1871,28 @@ function build_ipa_dib_ramdisk {
 function upload_baremetal_ironic_deploy {
     declare -g IRONIC_DEPLOY_KERNEL_ID IRONIC_DEPLOY_RAMDISK_ID
 
-    if [ -z "$IRONIC_DEPLOY_KERNEL" -o -z "$IRONIC_DEPLOY_RAMDISK" -o -z "$IRONIC_DEPLOY_ISO" ]; then
-        local IRONIC_DEPLOY_KERNEL_PATH=$TOP_DIR/files/ir-deploy-$IRONIC_DEPLOY_DRIVER.kernel
-        local IRONIC_DEPLOY_RAMDISK_PATH=$TOP_DIR/files/ir-deploy-$IRONIC_DEPLOY_DRIVER.initramfs
-        local IRONIC_DEPLOY_ISO_PATH=$TOP_DIR/files/ir-deploy-$IRONIC_DEPLOY_DRIVER.iso
-    else
-        local IRONIC_DEPLOY_KERNEL_PATH=$IRONIC_DEPLOY_KERNEL
-        local IRONIC_DEPLOY_RAMDISK_PATH=$IRONIC_DEPLOY_RAMDISK
-        local IRONIC_DEPLOY_ISO_PATH=$IRONIC_DEPLOY_ISO
-    fi
-
     local ironic_deploy_kernel_name
     local ironic_deploy_ramdisk_name
-    ironic_deploy_kernel_name=$(basename $IRONIC_DEPLOY_KERNEL_PATH)
-    ironic_deploy_ramdisk_name=$(basename $IRONIC_DEPLOY_RAMDISK_PATH)
+    ironic_deploy_kernel_name=$(basename $IRONIC_DEPLOY_KERNEL)
+    ironic_deploy_ramdisk_name=$(basename $IRONIC_DEPLOY_RAMDISK)
     if [[ "$HOST_TOPOLOGY_ROLE" != 'subnode' ]]; then
         echo_summary "Creating and uploading baremetal images for ironic"
 
-        if [ ! -e "$IRONIC_DEPLOY_RAMDISK_PATH" ] || \
-                [ ! -e "$IRONIC_DEPLOY_KERNEL_PATH" ]  || \
-                ( is_deploy_iso_required && [ ! -e "$IRONIC_DEPLOY_ISO_PATH" ] ); then
+        if [ ! -e "$IRONIC_DEPLOY_RAMDISK" ] || \
+                [ ! -e "$IRONIC_DEPLOY_KERNEL" ]  || \
+                ( is_deploy_iso_required && [ ! -e "$IRONIC_DEPLOY_ISO" ] ); then
             # files don't exist, need to build them
             if [ "$IRONIC_BUILD_DEPLOY_RAMDISK" = "True" ]; then
                 # we can build them only if we're not offline
                 if [ "$OFFLINE" != "True" ]; then
-                    build_ipa_ramdisk $IRONIC_DEPLOY_KERNEL_PATH $IRONIC_DEPLOY_RAMDISK_PATH $IRONIC_DEPLOY_ISO_PATH
+                    build_ipa_ramdisk $IRONIC_DEPLOY_KERNEL $IRONIC_DEPLOY_RAMDISK $IRONIC_DEPLOY_ISO
                 else
                     die $LINENO "Deploy kernel+ramdisk or iso files don't exist and cannot be built in OFFLINE mode"
                 fi
             else
                 # download the agent image tarball
-                wget "$IRONIC_AGENT_KERNEL_URL" -O $IRONIC_DEPLOY_KERNEL_PATH
-                wget "$IRONIC_AGENT_RAMDISK_URL" -O $IRONIC_DEPLOY_RAMDISK_PATH
+                wget "$IRONIC_AGENT_KERNEL_URL" -O $IRONIC_DEPLOY_KERNEL
+                wget "$IRONIC_AGENT_RAMDISK_URL" -O $IRONIC_DEPLOY_RAMDISK
             fi
         fi
 
@@ -1613,7 +1902,7 @@ function upload_baremetal_ironic_deploy {
             $ironic_deploy_kernel_name \
             --public --disk-format=aki \
             --container-format=aki \
-            < $IRONIC_DEPLOY_KERNEL_PATH  | grep ' id ' | get_field 2)
+            < $IRONIC_DEPLOY_KERNEL  | grep ' id ' | get_field 2)
         die_if_not_set $LINENO IRONIC_DEPLOY_KERNEL_ID "Failed to load kernel image into glance"
 
         IRONIC_DEPLOY_RAMDISK_ID=$(openstack \
@@ -1621,16 +1910,16 @@ function upload_baremetal_ironic_deploy {
             $ironic_deploy_ramdisk_name \
             --public --disk-format=ari \
             --container-format=ari \
-            < $IRONIC_DEPLOY_RAMDISK_PATH  | grep ' id ' | get_field 2)
+            < $IRONIC_DEPLOY_RAMDISK  | grep ' id ' | get_field 2)
         die_if_not_set $LINENO IRONIC_DEPLOY_RAMDISK_ID "Failed to load ramdisk image into glance"
 
         if is_deploy_iso_required; then
             IRONIC_DEPLOY_ISO_ID=$(openstack \
                 image create \
-                $(basename $IRONIC_DEPLOY_ISO_PATH) \
+                $(basename $IRONIC_DEPLOY_ISO) \
                 --public --disk-format=iso \
                 --container-format=bare \
-                < $IRONIC_DEPLOY_ISO_PATH  -f value -c id)
+                < $IRONIC_DEPLOY_ISO  -f value -c id)
             die_if_not_set $LINENO IRONIC_DEPLOY_ISO_ID "Failed to load deploy iso into glance"
         fi
     else
@@ -1647,6 +1936,11 @@ function prepare_baremetal_basic_ops {
     if [[ "$IRONIC_IS_HARDWARE" == "False" ]]; then
         configure_ironic_auxiliary
     fi
+
+    if ! is_service_enabled nova && [[ "$IRONIC_IPXE_ENABLED" == "True" ]] ; then
+        sudo install -g $LIBVIRT_GROUP -o $STACK_USER -m 644 $FILES/${IRONIC_WHOLEDISK_IMAGE_NAME}.img $IRONIC_HTTP_DIR
+    fi
+
     upload_baremetal_ironic_deploy
     enroll_nodes
     configure_tftpd
@@ -1695,12 +1989,21 @@ function cleanup_baremetal_basic_ops {
 function ironic_configure_tempest {
     iniset $TEMPEST_CONFIG service_available ironic True
 
-    local bm_flavor_id
-    bm_flavor_id=$(openstack flavor show baremetal -f value -c id)
-    die_if_not_set $LINENO bm_flavor_id "Failed to get id of baremetal flavor"
-    iniset $TEMPEST_CONFIG compute flavor_ref $bm_flavor_id
-    iniset $TEMPEST_CONFIG compute flavor_ref_alt $bm_flavor_id
-    iniset $TEMPEST_CONFIG compute-feature-enabled disk_config False
+    if [[ -n "$TEMPEST_BAREMETAL_MIN_MICROVERSION" ]]; then
+        iniset $TEMPEST_CONFIG baremetal min_microversion $TEMPEST_BAREMETAL_MIN_MICROVERSION
+    fi
+    if [[ -n "$TEMPEST_BAREMETAL_MAX_MICROVERSION" ]]; then
+        iniset $TEMPEST_CONFIG baremetal max_microversion $TEMPEST_BAREMETAL_MAX_MICROVERSION
+    fi
+
+    if is_service_enabled nova; then
+        local bm_flavor_id
+        bm_flavor_id=$(openstack flavor show baremetal -f value -c id)
+        die_if_not_set $LINENO bm_flavor_id "Failed to get id of baremetal flavor"
+        iniset $TEMPEST_CONFIG compute flavor_ref $bm_flavor_id
+        iniset $TEMPEST_CONFIG compute flavor_ref_alt $bm_flavor_id
+        iniset $TEMPEST_CONFIG compute-feature-enabled disk_config False
+    fi
     # NOTE(jlvillal): If IRONIC_PROVISION_NETWORK_NAME is set it means that
     # nodes are using the neutron network driver / multi-tenant networking.
     # Otherwise we are using a flat-network.
@@ -1721,6 +2024,37 @@ function ironic_configure_tempest {
     image_uuid=$(openstack image show $IRONIC_IMAGE_NAME -f value -c id)
     iniset $TEMPEST_CONFIG compute image_ref $image_uuid
     iniset $TEMPEST_CONFIG compute image_ref_alt $image_uuid
+
+    image_uuid=$(openstack image show $IRONIC_WHOLEDISK_IMAGE_NAME -f value -c id)
+    iniset $TEMPEST_CONFIG baremetal whole_disk_image_ref $image_uuid
+    image_uuid=$(openstack image show $IRONIC_PARTITIONED_IMAGE_NAME -f value -c id)
+    iniset $TEMPEST_CONFIG baremetal partition_image_ref $image_uuid
+
+    if [[ "$IRONIC_IPXE_ENABLED" == "True" ]] ; then
+        iniset $TEMPEST_CONFIG baremetal whole_disk_image_url "http://$IRONIC_HTTP_SERVER:$IRONIC_HTTP_PORT/${IRONIC_WHOLEDISK_IMAGE_NAME}.img"
+        iniset $TEMPEST_CONFIG baremetal whole_disk_image_checksum $(md5sum $FILES/${IRONIC_WHOLEDISK_IMAGE_NAME}.img)
+    fi
+
+    iniset $TEMPEST_CONFIG baremetal enabled_drivers $IRONIC_ENABLED_DRIVERS
+    iniset $TEMPEST_CONFIG baremetal enabled_hardware_types $IRONIC_ENABLED_HARDWARE_TYPES
+
+    local adjusted_root_disk_size_gb
+    if [[ "$IRONIC_IS_HARDWARE" == "False" ]]; then
+        adjusted_root_disk_size_gb=$(( ${IRONIC_VM_SPECS_DISK} - ${IRONIC_VM_EPHEMERAL_DISK} ))
+    else
+        adjusted_root_disk_size_gb=$(( ${IRONIC_HW_NODE_DISK} - ${IRONIC_HW_EPHEMERAL_DISK} ))
+    fi
+    iniset $TEMPEST_CONFIG baremetal adjusted_root_disk_size_gb $adjusted_root_disk_size_gb
+
+    if [[ -n "${IRONIC_TEMPEST_BUILD_TIMEOUT}" ]]; then
+        iniset $TEMPEST_CONFIG baremetal unprovision_timeout $IRONIC_TEMPEST_BUILD_TIMEOUT
+        iniset $TEMPEST_CONFIG baremetal active_timeout $IRONIC_TEMPEST_BUILD_TIMEOUT
+        iniset $TEMPEST_CONFIG baremetal deploywait_timeout $IRONIC_TEMPEST_BUILD_TIMEOUT
+        iniset $TEMPEST_CONFIG baremetal power_timeout $IRONIC_TEMPEST_BUILD_TIMEOUT
+    fi
+
+    # Enabled features
+    iniset $TEMPEST_CONFIG baremetal_feature_enabled ipxe_enabled $IRONIC_IPXE_ENABLED
 }
 
 function get_ironic_node_prefix {

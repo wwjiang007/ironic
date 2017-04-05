@@ -15,11 +15,15 @@
 
 from oslo_log import log as logging
 from tempest.common import waiters
+from tempest import config
+from tempest.lib.common import api_version_request
+from tempest.lib import decorators
 from tempest import test
 
 from ironic_tempest_plugin.tests.scenario import baremetal_manager
 
 LOG = logging.getLogger(__name__)
+CONF = config.CONF
 
 
 class BaremetalBasicOps(baremetal_manager.BaremetalScenarioTest):
@@ -97,14 +101,30 @@ class BaremetalBasicOps(baremetal_manager.BaremetalScenarioTest):
         return int(ephemeral)
 
     def validate_ports(self):
-        for port in self.get_ports(self.node['uuid']):
-            n_port_id = port['extra']['vif_port_id']
+        node_uuid = self.node['uuid']
+        vifs = []
+        # TODO(vsaienko) switch to get_node_vifs() when all stable releases
+        # supports Ironic API 1.28
+        if (api_version_request.APIVersionRequest(
+            CONF.baremetal.max_microversion) >=
+                api_version_request.APIVersionRequest('1.28')):
+            vifs = self.get_node_vifs(node_uuid)
+        else:
+            for port in self.get_ports(self.node['uuid']):
+                vif = port['extra'].get('vif_port_id')
+                if vif:
+                    vifs.append({'id': vif})
+
+        ir_ports = self.get_ports(node_uuid)
+        ir_ports_addresses = [x['address'] for x in ir_ports]
+        for vif in vifs:
+            n_port_id = vif['id']
             body = self.ports_client.show_port(n_port_id)
             n_port = body['port']
             self.assertEqual(n_port['device_id'], self.instance['id'])
-            self.assertEqual(n_port['mac_address'], port['address'])
+            self.assertIn(n_port['mac_address'], ir_ports_addresses)
 
-    @test.idempotent_id('549173a5-38ec-42bb-b0e2-c8b9f4a08943')
+    @decorators.idempotent_id('549173a5-38ec-42bb-b0e2-c8b9f4a08943')
     @test.services('compute', 'image', 'network')
     def test_baremetal_server_ops(self):
         self.add_keypair()

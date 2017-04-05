@@ -286,8 +286,12 @@ class TestAgentDeploy(db_base.DbTestCase):
     @mock.patch.object(deploy_utils, 'build_instance_info_for_deploy')
     @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.'
                 'add_provisioning_network', autospec=True)
-    def test_prepare(self, add_provisioning_net_mock, build_instance_info_mock,
-                     build_options_mock, pxe_prepare_ramdisk_mock):
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.'
+                'unconfigure_tenant_networks', spec_set=True, autospec=True)
+    def test_prepare(
+            self, unconfigure_tenant_net_mock, add_provisioning_net_mock,
+            build_instance_info_mock, build_options_mock,
+            pxe_prepare_ramdisk_mock):
         with task_manager.acquire(
                 self.context, self.node['uuid'], shared=False) as task:
             task.node.provision_state = states.DEPLOYING
@@ -301,6 +305,7 @@ class TestAgentDeploy(db_base.DbTestCase):
             pxe_prepare_ramdisk_mock.assert_called_once_with(
                 task, {'a': 'b'})
             add_provisioning_net_mock.assert_called_once_with(mock.ANY, task)
+            unconfigure_tenant_net_mock.assert_called_once_with(mock.ANY, task)
 
         self.node.refresh()
         self.assertEqual('bar', self.node.instance_info['foo'])
@@ -328,12 +333,14 @@ class TestAgentDeploy(db_base.DbTestCase):
 
     @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.'
                 'add_provisioning_network', autospec=True)
+    @mock.patch.object(pxe.PXEBoot, 'prepare_instance')
     @mock.patch.object(pxe.PXEBoot, 'prepare_ramdisk')
     @mock.patch.object(deploy_utils, 'build_agent_options')
     @mock.patch.object(deploy_utils, 'build_instance_info_for_deploy')
     def test_prepare_active(
             self, build_instance_info_mock, build_options_mock,
-            pxe_prepare_ramdisk_mock, add_provisioning_net_mock):
+            pxe_prepare_ramdisk_mock, pxe_prepare_instance_mock,
+            add_provisioning_net_mock):
         with task_manager.acquire(
                 self.context, self.node['uuid'], shared=False) as task:
             task.node.provision_state = states.ACTIVE
@@ -343,6 +350,7 @@ class TestAgentDeploy(db_base.DbTestCase):
             self.assertFalse(build_instance_info_mock.called)
             self.assertFalse(build_options_mock.called)
             self.assertFalse(pxe_prepare_ramdisk_mock.called)
+            self.assertTrue(pxe_prepare_instance_mock.called)
             self.assertFalse(add_provisioning_net_mock.called)
 
     @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.'
@@ -366,20 +374,25 @@ class TestAgentDeploy(db_base.DbTestCase):
 
     @mock.patch('ironic.common.dhcp_factory.DHCPFactory._set_dhcp_provider')
     @mock.patch('ironic.common.dhcp_factory.DHCPFactory.clean_dhcp')
+    @mock.patch.object(pxe.PXEBoot, 'clean_up_instance')
     @mock.patch.object(pxe.PXEBoot, 'clean_up_ramdisk')
-    def test_clean_up(self, pxe_clean_up_ramdisk_mock, clean_dhcp_mock,
+    def test_clean_up(self, pxe_clean_up_ramdisk_mock,
+                      pxe_clean_up_instance_mock, clean_dhcp_mock,
                       set_dhcp_provider_mock):
         with task_manager.acquire(
                 self.context, self.node['uuid'], shared=False) as task:
             self.driver.clean_up(task)
             pxe_clean_up_ramdisk_mock.assert_called_once_with(task)
+            pxe_clean_up_instance_mock.assert_called_once_with(task)
             set_dhcp_provider_mock.assert_called_once_with()
             clean_dhcp_mock.assert_called_once_with(task)
 
     @mock.patch('ironic.common.dhcp_factory.DHCPFactory._set_dhcp_provider')
     @mock.patch('ironic.common.dhcp_factory.DHCPFactory.clean_dhcp')
+    @mock.patch.object(pxe.PXEBoot, 'clean_up_instance')
     @mock.patch.object(pxe.PXEBoot, 'clean_up_ramdisk')
     def test_clean_up_manage_agent_boot_false(self, pxe_clean_up_ramdisk_mock,
+                                              pxe_clean_up_instance_mock,
                                               clean_dhcp_mock,
                                               set_dhcp_provider_mock):
         with task_manager.acquire(
@@ -387,6 +400,7 @@ class TestAgentDeploy(db_base.DbTestCase):
             self.config(group='agent', manage_agent_boot=False)
             self.driver.clean_up(task)
             self.assertFalse(pxe_clean_up_ramdisk_mock.called)
+            pxe_clean_up_instance_mock.assert_called_once_with(task)
             set_dhcp_provider_mock.assert_called_once_with()
             clean_dhcp_mock.assert_called_once_with(task)
 

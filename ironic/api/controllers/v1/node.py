@@ -102,6 +102,12 @@ PROVISION_ACTION_STATES = (ir_states.VERBS['manage'],
 
 _NODES_CONTROLLER_RESERVED_WORDS = None
 
+ALLOWED_TARGET_POWER_STATES = (ir_states.POWER_ON,
+                               ir_states.POWER_OFF,
+                               ir_states.REBOOT,
+                               ir_states.SOFT_REBOOT,
+                               ir_states.SOFT_POWER_OFF)
+
 
 def get_nodes_controller_reserved_names():
     global _NODES_CONTROLLER_RESERVED_WORDS
@@ -141,6 +147,10 @@ def hide_fields_in_newer_versions(obj):
 
     if not api_utils.allow_resource_class():
         obj.resource_class = wsme.Unset
+
+    if not api_utils.allow_dynamic_interfaces():
+        for field in api_utils.V31_FIELDS:
+            setattr(obj, field, wsme.Unset)
 
 
 def update_state_in_older_versions(obj):
@@ -244,10 +254,48 @@ class BootDeviceController(rest.RestController):
         return {'supported_boot_devices': boot_devices}
 
 
+class InjectNmiController(rest.RestController):
+
+    @METRICS.timer('InjectNmiController.put')
+    @expose.expose(None, types.uuid_or_name,
+                   status_code=http_client.NO_CONTENT)
+    def put(self, node_ident):
+        """Inject NMI for a node.
+
+        Inject NMI (Non Maskable Interrupt) for a node immediately.
+
+        :param node_ident: the UUID or logical name of a node.
+        :raises: NotFound if requested version of the API doesn't support
+                 inject nmi.
+        :raises: HTTPForbidden if the policy is not authorized.
+        :raises: NodeNotFound if the node is not found.
+        :raises: NodeLocked if the node is locked by another conductor.
+        :raises: UnsupportedDriverExtension if the node's driver doesn't
+                 support management or management.inject_nmi.
+        :raises: InvalidParameterValue when the wrong driver info is
+                 specified or an invalid boot device is specified.
+        :raises: MissingParameterValue if missing supplied info.
+        """
+        if not api_utils.allow_inject_nmi():
+            raise exception.NotFound()
+
+        cdict = pecan.request.context.to_policy_values()
+        policy.authorize('baremetal:node:inject_nmi', cdict, cdict)
+
+        rpc_node = api_utils.get_rpc_node(node_ident)
+        topic = pecan.request.rpcapi.get_topic_for(rpc_node)
+        pecan.request.rpcapi.inject_nmi(pecan.request.context,
+                                        rpc_node.uuid,
+                                        topic=topic)
+
+
 class NodeManagementController(rest.RestController):
 
     boot_device = BootDeviceController()
     """Expose boot_device as a sub-element of management"""
+
+    inject_nmi = InjectNmiController()
+    """Expose inject_nmi as a sub-element of management"""
 
 
 class ConsoleInfo(base.APIBase):
@@ -434,16 +482,22 @@ class NodeStatesController(rest.RestController):
 
     @METRICS.timer('NodeStatesController.power')
     @expose.expose(None, types.uuid_or_name, wtypes.text,
+                   wtypes.IntegerType(minimum=1),
                    status_code=http_client.ACCEPTED)
-    def power(self, node_ident, target):
+    def power(self, node_ident, target, timeout=None):
         """Set the power state of the node.
 
         :param node_ident: the UUID or logical name of a node.
         :param target: The desired power state of the node.
+        :param timeout: timeout (in seconds) positive integer (> 0) for any
+          power state. ``None`` indicates to use default timeout.
         :raises: ClientSideError (HTTP 409) if a power operation is
                  already in progress.
         :raises: InvalidStateRequested (HTTP 400) if the requested target
                  state is not valid or if the node is in CLEANING state.
+        :raises: NotAcceptable (HTTP 406) for soft reboot, soft power off or
+          timeout parameter, if requested version of the API is less than 1.27.
+        :raises: Invalid (HTTP 400) if timeout value is less than 1.
 
         """
         cdict = pecan.request.context.to_policy_values()
@@ -454,9 +508,16 @@ class NodeStatesController(rest.RestController):
         rpc_node = api_utils.get_rpc_node(node_ident)
         topic = pecan.request.rpcapi.get_topic_for(rpc_node)
 
-        if target not in [ir_states.POWER_ON,
-                          ir_states.POWER_OFF,
-                          ir_states.REBOOT]:
+        if ((target in [ir_states.SOFT_REBOOT, ir_states.SOFT_POWER_OFF] or
+             timeout) and not api_utils.allow_soft_power_off()):
+            raise exception.NotAcceptable()
+        # FIXME(naohirot): This check is workaround because
+        #                  wtypes.IntegerType(minimum=1) is not effective
+        if timeout is not None and timeout < 1:
+            raise exception.Invalid(
+                _("timeout has to be positive integer"))
+
+        if target not in ALLOWED_TARGET_POWER_STATES:
             raise exception.InvalidStateRequested(
                 action=target, node=node_ident,
                 state=rpc_node.power_state)
@@ -470,7 +531,8 @@ class NodeStatesController(rest.RestController):
 
         pecan.request.rpcapi.change_node_power_state(pecan.request.context,
                                                      rpc_node.uuid, target,
-                                                     topic)
+                                                     timeout=timeout,
+                                                     topic=topic)
         # Set the HTTP Location Header
         url_args = '/'.join([node_ident, 'states'])
         pecan.response.location = link.build_url('nodes', url_args)
@@ -754,8 +816,32 @@ class Node(base.APIBase):
     states = wsme.wsattr([link.Link], readonly=True)
     """Links to endpoint for retrieving and setting node states"""
 
+    boot_interface = wsme.wsattr(wtypes.text)
+    """The boot interface to be used for this node"""
+
+    console_interface = wsme.wsattr(wtypes.text)
+    """The console interface to be used for this node"""
+
+    deploy_interface = wsme.wsattr(wtypes.text)
+    """The deploy interface to be used for this node"""
+
+    inspect_interface = wsme.wsattr(wtypes.text)
+    """The inspect interface to be used for this node"""
+
+    management_interface = wsme.wsattr(wtypes.text)
+    """The management interface to be used for this node"""
+
     network_interface = wsme.wsattr(wtypes.text)
     """The network interface to be used for this node"""
+
+    power_interface = wsme.wsattr(wtypes.text)
+    """The power interface to be used for this node"""
+
+    raid_interface = wsme.wsattr(wtypes.text)
+    """The raid interface to be used for this node"""
+
+    vendor_interface = wsme.wsattr(wtypes.text)
+    """The vendor interface to be used for this node"""
 
     # NOTE(deva): "conductor_affinity" shouldn't be presented on the
     #             API because it's an internal value. Don't add it here.
@@ -891,7 +977,11 @@ class Node(base.APIBase):
                      inspection_finished_at=None, inspection_started_at=time,
                      console_enabled=False, clean_step={},
                      raid_config=None, target_raid_config=None,
-                     network_interface='flat', resource_class='baremetal-gold')
+                     network_interface='flat', resource_class='baremetal-gold',
+                     boot_interface=None, console_interface=None,
+                     deploy_interface=None, inspect_interface=None,
+                     management_interface=None, power_interface=None,
+                     raid_interface=None, vendor_interface=None)
         # NOTE(matty_dubs): The chassis_uuid getter() is based on the
         # _chassis_uuid variable:
         sample._chassis_uuid = 'edcad704-b2da-41d5-96d9-afd580ecfa12'
@@ -990,10 +1080,7 @@ class NodeVendorPassthruController(rest.RestController):
         :param data: body of data to supply to the specified method.
         """
         cdict = pecan.request.context.to_policy_values()
-        if method == 'heartbeat':
-            policy.authorize('baremetal:node:ipa_heartbeat', cdict, cdict)
-        else:
-            policy.authorize('baremetal:node:vendor_passthru', cdict, cdict)
+        policy.authorize('baremetal:node:vendor_passthru', cdict, cdict)
 
         # Raise an exception if node is not found
         rpc_node = api_utils.get_rpc_node(node_ident)
@@ -1051,6 +1138,76 @@ class NodeMaintenanceController(rest.RestController):
         self._set_maintenance(node_ident, False)
 
 
+# NOTE(vsaienko) We don't support pagination with VIFs, so we don't use
+# collection.Collection here.
+class VifCollection(wtypes.Base):
+    """API representation of a collection of VIFs. """
+
+    vifs = [types.viftype]
+    """A list containing VIFs objects"""
+
+    @staticmethod
+    def collection_from_list(vifs):
+        col = VifCollection()
+        col.vifs = [types.VifType.frombasetype(vif) for vif in vifs]
+        return col
+
+
+class NodeVIFController(rest.RestController):
+
+    def __init__(self, node_ident):
+        self.node_ident = node_ident
+
+    def _get_node_and_topic(self):
+        rpc_node = api_utils.get_rpc_node(self.node_ident)
+        try:
+            return rpc_node, pecan.request.rpcapi.get_topic_for(rpc_node)
+        except exception.NoValidHost as e:
+            e.code = http_client.BAD_REQUEST
+            raise
+
+    @METRICS.timer('NodeVIFController.get_all')
+    @expose.expose(VifCollection)
+    def get_all(self):
+        """Get a list of attached VIFs"""
+        cdict = pecan.request.context.to_policy_values()
+        policy.authorize('baremetal:node:vif:list', cdict, cdict)
+        rpc_node, topic = self._get_node_and_topic()
+        vifs = pecan.request.rpcapi.vif_list(pecan.request.context,
+                                             rpc_node.uuid, topic=topic)
+        return VifCollection.collection_from_list(vifs)
+
+    @METRICS.timer('NodeVIFController.post')
+    @expose.expose(None, body=types.viftype,
+                   status_code=http_client.NO_CONTENT)
+    def post(self, vif):
+        """Attach a VIF to this node
+
+        :param vif_info: a dictionary of information about a VIF.
+            It must have an 'id' key, whose value is a unique identifier
+            for that VIF.
+        """
+        cdict = pecan.request.context.to_policy_values()
+        policy.authorize('baremetal:node:vif:attach', cdict, cdict)
+        rpc_node, topic = self._get_node_and_topic()
+        pecan.request.rpcapi.vif_attach(pecan.request.context, rpc_node.uuid,
+                                        vif_info=vif, topic=topic)
+
+    @METRICS.timer('NodeVIFController.delete')
+    @expose.expose(None, types.uuid_or_name,
+                   status_code=http_client.NO_CONTENT)
+    def delete(self, vif_id):
+        """Detach a VIF from this node
+
+        :param vif_id: The ID of a VIF to detach
+        """
+        cdict = pecan.request.context.to_policy_values()
+        policy.authorize('baremetal:node:vif:detach', cdict, cdict)
+        rpc_node, topic = self._get_node_and_topic()
+        pecan.request.rpcapi.vif_detach(pecan.request.context, rpc_node.uuid,
+                                        vif_id=vif_id, topic=topic)
+
+
 class NodesController(rest.RestController):
     """REST controller for Nodes."""
 
@@ -1089,6 +1246,7 @@ class NodesController(rest.RestController):
     _subcontroller_map = {
         'ports': port.PortsController,
         'portgroups': portgroup.PortgroupsController,
+        'vifs': NodeVIFController,
     }
 
     @pecan.expose()
@@ -1097,13 +1255,16 @@ class NodesController(rest.RestController):
             ident = types.uuid_or_name.validate(ident)
         except exception.InvalidUuidOrName as e:
             pecan.abort(http_client.BAD_REQUEST, e.args[0])
-        if remainder:
-            subcontroller = self._subcontroller_map.get(remainder[0])
-            if subcontroller:
-                if (remainder[0] == 'portgroups' and
-                        not api_utils.allow_portgroups_subcontrollers()):
-                    pecan.abort(http_client.NOT_FOUND)
-                return subcontroller(node_ident=ident), remainder[1:]
+        if not remainder:
+            return
+        if ((remainder[0] == 'portgroups' and
+                not api_utils.allow_portgroups_subcontrollers()) or
+            (remainder[0] == 'vifs' and
+                not api_utils.allow_vifs_subcontroller())):
+            pecan.abort(http_client.NOT_FOUND)
+        subcontroller = self._subcontroller_map.get(remainder[0])
+        if subcontroller:
+            return subcontroller(node_ident=ident), remainder[1:]
 
     def _get_nodes_collection(self, chassis_uuid, instance_uuid, associated,
                               maintenance, provision_state, marker, limit,
@@ -1419,6 +1580,11 @@ class NodesController(rest.RestController):
                 n_interface is not wtypes.Unset):
             raise exception.NotAcceptable()
 
+        if not api_utils.allow_dynamic_interfaces():
+            for field in api_utils.V31_FIELDS:
+                if getattr(node, field) is not wsme.Unset:
+                    raise exception.NotAcceptable()
+
         # NOTE(deva): get_topic_for checks if node.driver is in the hash ring
         #             and raises NoValidHost if it is not.
         #             We need to ensure that node has a UUID before it can
@@ -1477,6 +1643,11 @@ class NodesController(rest.RestController):
         n_interfaces = api_utils.get_patch_values(patch, '/network_interface')
         if n_interfaces and not api_utils.allow_network_interface():
             raise exception.NotAcceptable()
+
+        if not api_utils.allow_dynamic_interfaces():
+            for field in api_utils.V31_FIELDS:
+                if api_utils.get_patch_values(patch, '/%s' % field):
+                    raise exception.NotAcceptable()
 
         rpc_node = api_utils.get_rpc_node(node_ident)
 

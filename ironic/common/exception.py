@@ -228,7 +228,7 @@ class VolumeTargetBootIndexAlreadyExists(Conflict):
 
 class VifAlreadyAttached(Conflict):
     _msg_fmt = _("Unable to attach VIF because VIF %(vif)s is already "
-                 "attached to Ironic port %(port_uuid)s")
+                 "attached to Ironic %(object_type)s %(object_uuid)s")
 
 
 class NoFreePhysicalPorts(Invalid):
@@ -295,11 +295,11 @@ class ImageConvertFailed(IronicException):
 # Cannot be templated as the error syntax varies.
 # msg needs to be constructed when raised.
 class InvalidParameterValue(Invalid):
-    _msg_fmt = _("%(err)s")
+    _msg_fmt = "%(err)s"
 
 
 class MissingParameterValue(InvalidParameterValue):
-    _msg_fmt = _("%(err)s")
+    _msg_fmt = "%(err)s"
 
 
 class Duplicate(IronicException):
@@ -343,8 +343,16 @@ class IncompatibleInterface(InvalidParameterValue):
 
 
 class NoValidDefaultForInterface(InvalidParameterValue):
-    _msg_fmt = _("No default value found for %(interface_type)s interface "
-                 "for node %(node)s with driver or hardware type %(driver)s.")
+    # NOTE(rloo): in the line below, there is no blank space after 'For'
+    #             because node_info could be an empty string. If node_info
+    #             is not empty, it should start with a space.
+    _msg_fmt = _("For%(node_info)s %(driver_type)s '%(driver)s', no default "
+                 "value found for %(interface_type)s interface.")
+
+
+class MustBeNone(InvalidParameterValue):
+    _msg_fmt = _("For node %(node)s with driver %(driver)s, these node "
+                 "fields must be set to None: %(node_fields)s.")
 
 
 class ImageNotFound(NotFound):
@@ -416,6 +424,11 @@ class VolumeTargetNotFound(NotFound):
     _msg_fmt = _("Volume target %(target)s could not be found.")
 
 
+class DriverNameConflict(IronicException):
+    _msg_fmt = _("Classic and dynamic drivers cannot have the "
+                 "same names '%(names)s'.")
+
+
 class NoDriversLoaded(IronicException):
     _msg_fmt = _("Conductor %(conductor)s cannot be started "
                  "because no drivers were loaded.")
@@ -427,6 +440,13 @@ class ConductorNotFound(NotFound):
 
 class ConductorAlreadyRegistered(IronicException):
     _msg_fmt = _("Conductor %(conductor)s already registered.")
+
+
+class ConductorHardwareInterfacesAlreadyRegistered(IronicException):
+    _msg_fmt = _("At least one of these (hardware type %(hardware_type)s, "
+                 "interface type %(interface_type)s, interfaces "
+                 "%(interfaces)s) combinations are already registered for "
+                 "this conductor.")
 
 
 class PowerStateFailure(InvalidState):
@@ -459,10 +479,6 @@ class ChassisNotEmpty(Invalid):
 
 class IPMIFailure(IronicException):
     _msg_fmt = _("IPMI call failed: %(cmd)s.")
-
-
-class MSFTOCSClientApiException(IronicException):
-    _msg_fmt = _("MSFT OCS call failed.")
 
 
 class SSHConnectFailed(IronicException):
@@ -630,7 +646,7 @@ class SwiftOperationError(IronicException):
 
 
 class SwiftObjectNotFoundError(SwiftOperationError):
-    _msg_fmt = _("Swift object %(object)s from container %(container)s "
+    _msg_fmt = _("Swift object %(obj)s from container %(container)s "
                  "not found. Operation '%(operation)s' failed.")
 
 
@@ -649,11 +665,6 @@ class IRMCOperationError(IronicException):
 
 class IRMCSharedFileSystemNotMounted(IronicException):
     _msg_fmt = _("iRMC shared file system '%(share)s' is not mounted.")
-
-
-class VirtualBoxOperationFailed(IronicException):
-    _msg_fmt = _("VirtualBox operation '%(operation)s' failed. "
-                 "Error: %(error)s")
 
 
 class HardwareInspectionFailure(IronicException):

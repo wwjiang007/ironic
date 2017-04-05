@@ -34,7 +34,7 @@ from ironic.conf import CONF
 _DEFAULT_SQL_CONNECTION = 'sqlite:///' + paths.state_path_def('ironic.sqlite')
 
 
-db_options.set_defaults(CONF, _DEFAULT_SQL_CONNECTION, 'ironic.sqlite')
+db_options.set_defaults(CONF, connection=_DEFAULT_SQL_CONNECTION)
 
 
 def table_args():
@@ -86,6 +86,26 @@ class Conductor(Base):
     hostname = Column(String(255), nullable=False)
     drivers = Column(db_types.JsonEncodedList)
     online = Column(Boolean, default=True)
+
+
+class ConductorHardwareInterfaces(Base):
+    """Internal table used to track what is loaded on each conductor."""
+
+    __tablename__ = 'conductor_hardware_interfaces'
+    __table_args__ = (
+        schema.UniqueConstraint(
+            'conductor_id',
+            'hardware_type',
+            'interface_type',
+            'interface_name',
+            name='uniq_conductorhardwareinterfaces0'),
+        table_args())
+    id = Column(Integer, primary_key=True)
+    conductor_id = Column(Integer, ForeignKey('conductors.id'), nullable=False)
+    hardware_type = Column(String(255), nullable=False)
+    interface_type = Column(String(16), nullable=False)
+    interface_name = Column(String(255), nullable=False)
+    default = Column(Boolean, default=False, nullable=False)
 
 
 class Node(Base):

@@ -495,6 +495,96 @@ class NodePowerActionTestCase(base.DbTestCase):
                     obj_fields.NotificationLevel.ERROR)
 
 
+class NodeSoftPowerActionTestCase(base.DbTestCase):
+
+    def setUp(self):
+        super(NodeSoftPowerActionTestCase, self).setUp()
+        mgr_utils.mock_the_extension_manager(driver="fake_soft_power")
+        self.driver = driver_factory.get_driver("fake_soft_power")
+
+    def test_node_power_action_power_soft_reboot(self):
+        """Test for soft reboot a node."""
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid(),
+                                          driver='fake_soft_power',
+                                          power_state=states.POWER_ON)
+        task = task_manager.TaskManager(self.context, node.uuid)
+
+        with mock.patch.object(self.driver.power,
+                               'get_power_state') as get_power_mock:
+            get_power_mock.return_value = states.POWER_ON
+
+            conductor_utils.node_power_action(task, states.SOFT_REBOOT)
+
+            node.refresh()
+            get_power_mock.assert_called_once_with(mock.ANY)
+            self.assertEqual(states.POWER_ON, node['power_state'])
+            self.assertIsNone(node['target_power_state'])
+            self.assertIsNone(node['last_error'])
+
+    def test_node_power_action_power_soft_reboot_timeout(self):
+        """Test for soft reboot a node."""
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid(),
+                                          driver='fake_soft_power',
+                                          power_state=states.POWER_ON)
+        task = task_manager.TaskManager(self.context, node.uuid)
+
+        with mock.patch.object(self.driver.power,
+                               'get_power_state') as get_power_mock:
+            get_power_mock.return_value = states.POWER_ON
+
+            conductor_utils.node_power_action(task, states.SOFT_REBOOT,
+                                              timeout=2)
+
+            node.refresh()
+            get_power_mock.assert_called_once_with(mock.ANY)
+            self.assertEqual(states.POWER_ON, node['power_state'])
+            self.assertIsNone(node['target_power_state'])
+            self.assertIsNone(node['last_error'])
+
+    def test_node_power_action_soft_power_off(self):
+        """Test node_power_action to turn node soft power off."""
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid(),
+                                          driver='fake_soft_power',
+                                          power_state=states.POWER_ON)
+        task = task_manager.TaskManager(self.context, node.uuid)
+
+        with mock.patch.object(self.driver.power,
+                               'get_power_state') as get_power_mock:
+            get_power_mock.return_value = states.POWER_ON
+
+            conductor_utils.node_power_action(task, states.SOFT_POWER_OFF)
+
+            node.refresh()
+            get_power_mock.assert_called_once_with(mock.ANY)
+            self.assertEqual(states.POWER_OFF, node['power_state'])
+            self.assertIsNone(node['target_power_state'])
+            self.assertIsNone(node['last_error'])
+
+    def test_node_power_action_soft_power_off_timeout(self):
+        """Test node_power_action to turn node soft power off."""
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid(),
+                                          driver='fake_soft_power',
+                                          power_state=states.POWER_ON)
+        task = task_manager.TaskManager(self.context, node.uuid)
+
+        with mock.patch.object(self.driver.power,
+                               'get_power_state') as get_power_mock:
+            get_power_mock.return_value = states.POWER_ON
+
+            conductor_utils.node_power_action(task, states.SOFT_POWER_OFF,
+                                              timeout=2)
+
+            node.refresh()
+            get_power_mock.assert_called_once_with(mock.ANY)
+            self.assertEqual(states.POWER_OFF, node['power_state'])
+            self.assertIsNone(node['target_power_state'])
+            self.assertIsNone(node['last_error'])
+
+
 class CleanupAfterTimeoutTestCase(tests_base.TestCase):
     def setUp(self):
         super(CleanupAfterTimeoutTestCase, self).setUp()
@@ -550,7 +640,8 @@ class NodeCleaningStepsTestCase(base.DbTestCase):
         self.deploy_update = {
             'step': 'update_firmware', 'priority': 10, 'interface': 'deploy'}
         self.deploy_erase = {
-            'step': 'erase_disks', 'priority': 20, 'interface': 'deploy'}
+            'step': 'erase_disks', 'priority': 20, 'interface': 'deploy',
+            'abortable': True}
         # Automated cleaning should be executed in this order
         self.clean_steps = [self.deploy_erase, self.power_update,
                             self.deploy_update]
@@ -650,6 +741,7 @@ class NodeCleaningStepsTestCase(base.DbTestCase):
                                             mock_validate_user_steps):
         clean_steps = [self.deploy_raid]
         mock_steps.return_value = self.clean_steps
+        mock_validate_user_steps.return_value = clean_steps
 
         node = obj_utils.create_test_node(
             self.context, driver='fake',
@@ -678,8 +770,15 @@ class NodeCleaningStepsTestCase(base.DbTestCase):
                       {'step': 'erase_disks', 'interface': 'deploy'}]
 
         with task_manager.acquire(self.context, node.uuid) as task:
-            conductor_utils._validate_user_clean_steps(task, user_steps)
+            result = conductor_utils._validate_user_clean_steps(task,
+                                                                user_steps)
             mock_steps.assert_called_once_with(task, enabled=False, sort=False)
+
+        expected = [{'step': 'update_firmware', 'interface': 'power',
+                     'priority': 10, 'abortable': False},
+                    {'step': 'erase_disks', 'interface': 'deploy',
+                     'priority': 20, 'abortable': True}]
+        self.assertEqual(expected, result)
 
     @mock.patch.object(conductor_utils, '_get_cleaning_steps')
     def test__validate_user_clean_steps_no_steps(self, mock_steps):

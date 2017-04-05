@@ -116,6 +116,8 @@ class TestListNodes(test_api_base.BaseApiTest):
         self.assertNotIn('target_raid_config', data['nodes'][0])
         self.assertNotIn('network_interface', data['nodes'][0])
         self.assertNotIn('resource_class', data['nodes'][0])
+        for field in api_utils.V31_FIELDS:
+            self.assertNotIn(field, data['nodes'][0])
         # never expose the chassis_id
         self.assertNotIn('chassis_id', data['nodes'][0])
 
@@ -147,6 +149,8 @@ class TestListNodes(test_api_base.BaseApiTest):
         self.assertIn('states', data)
         self.assertIn('network_interface', data)
         self.assertIn('resource_class', data)
+        for field in api_utils.V31_FIELDS:
+            self.assertIn(field, data)
         # never expose the chassis_id
         self.assertNotIn('chassis_id', data)
 
@@ -157,6 +161,14 @@ class TestListNodes(test_api_base.BaseApiTest):
             '/nodes/%s' % node.uuid,
             headers={api_base.Version.string: '1.8'})
         self.assertNotIn('states', data)
+
+    def test_node_interface_fields_hidden_in_lower_version(self):
+        node = obj_utils.create_test_node(self.context)
+        data = self.get_json(
+            '/nodes/%s' % node.uuid,
+            headers={api_base.Version.string: '1.30'})
+        for field in api_utils.V31_FIELDS:
+            self.assertNotIn(field, data)
 
     def test_get_one_custom_fields(self):
         node = obj_utils.create_test_node(self.context,
@@ -237,6 +249,26 @@ class TestListNodes(test_api_base.BaseApiTest):
             headers={api_base.Version.string: str(api_v1.MAX_VER)})
         self.assertIn('network_interface', response)
 
+    def test_get_all_interface_fields_invalid_api_version(self):
+        node = obj_utils.create_test_node(self.context,
+                                          chassis_id=self.chassis.id)
+        fields_arg = ','.join(api_utils.V31_FIELDS)
+        response = self.get_json(
+            '/nodes/%s?fields=%s' % (node.uuid, fields_arg),
+            headers={api_base.Version.string: str(api_v1.MIN_VER)},
+            expect_errors=True)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_int)
+
+    def test_get_all_interface_fields(self):
+        node = obj_utils.create_test_node(self.context,
+                                          chassis_id=self.chassis.id)
+        fields_arg = ','.join(api_utils.V31_FIELDS)
+        response = self.get_json(
+            '/nodes/%s?fields=%s' % (node.uuid, fields_arg),
+            headers={api_base.Version.string: str(api_v1.MAX_VER)})
+        for field in api_utils.V31_FIELDS:
+            self.assertIn(field, response)
+
     def test_detail(self):
         node = obj_utils.create_test_node(self.context,
                                           chassis_id=self.chassis.id)
@@ -261,6 +293,9 @@ class TestListNodes(test_api_base.BaseApiTest):
         self.assertIn('raid_config', data['nodes'][0])
         self.assertIn('target_raid_config', data['nodes'][0])
         self.assertIn('network_interface', data['nodes'][0])
+        self.assertIn('resource_class', data['nodes'][0])
+        for field in api_utils.V31_FIELDS:
+            self.assertIn(field, data['nodes'][0])
         # never expose the chassis_id
         self.assertNotIn('chassis_id', data['nodes'][0])
 
@@ -356,6 +391,18 @@ class TestListNodes(test_api_base.BaseApiTest):
             '/nodes/detail', headers={api_base.Version.string: '1.21'})
         self.assertEqual(node.resource_class,
                          new_data['nodes'][0]["resource_class"])
+
+    def test_hide_fields_in_newer_versions_interface_fields(self):
+        node = obj_utils.create_test_node(self.context)
+        data = self.get_json(
+            '/nodes/detail', headers={api_base.Version.string: '1.30'})
+        for field in api_utils.V31_FIELDS:
+            self.assertNotIn(field, data['nodes'][0])
+        new_data = self.get_json(
+            '/nodes/detail', headers={api_base.Version.string: '1.31'})
+        for field in api_utils.V31_FIELDS:
+            self.assertEqual(getattr(node, field),
+                             new_data['nodes'][0][field])
 
     def test_many(self):
         nodes = []
@@ -1739,6 +1786,51 @@ class TestPatch(test_api_base.BaseApiTest):
         self.assertEqual('application/json', response.content_type)
         self.assertEqual(http_client.BAD_REQUEST, response.status_code)
 
+    def test_update_interface_fields(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        headers = {api_base.Version.string: str(api_v1.MAX_VER)}
+        for field in api_utils.V31_FIELDS:
+            response = self.patch_json('/nodes/%s' % node.uuid,
+                                       [{'path': '/%s' % field,
+                                         'value': 'fake',
+                                         'op': 'add'}],
+                                       headers=headers)
+            self.assertEqual('application/json', response.content_type)
+            self.assertEqual(http_client.OK, response.status_code)
+
+    def test_update_interface_fields_bad_version(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        headers = {api_base.Version.string: '1.30'}
+        for field in api_utils.V31_FIELDS:
+            response = self.patch_json('/nodes/%s' % node.uuid,
+                                       [{'path': '/%s' % field,
+                                         'value': 'fake',
+                                         'op': 'add'}],
+                                       headers=headers,
+                                       expect_errors=True)
+            self.assertEqual('application/json', response.content_type)
+            self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_code)
+
+    def test_update_classic_driver_interface_fields(self):
+        headers = {api_base.Version.string: '1.31'}
+        self.mock_update_node.side_effect = (
+            exception.MustBeNone('error'))
+        for field in api_utils.V31_FIELDS:
+            node = obj_utils.create_test_node(self.context,
+                                              uuid=uuidutils.generate_uuid())
+            response = self.patch_json('/nodes/%s' % node.uuid,
+                                       [{'path': '/%s' % field,
+                                         'value': 'fake',
+                                         'op': 'add'}],
+                                       headers=headers,
+                                       expect_errors=True)
+            self.assertEqual(http_client.BAD_REQUEST, response.status_int)
+            self.assertEqual('application/json', response.content_type)
+
 
 def _create_node_locally(node):
     driver_factory.check_and_update_node_interfaces(node)
@@ -1811,6 +1903,42 @@ class TestPost(test_api_base.BaseApiTest):
         result = self._test_create_node(headers=headers,
                                         network_interface='neutron')
         self.assertEqual('neutron', result['network_interface'])
+
+    def test_create_node_specify_interfaces(self):
+        headers = {api_base.Version.string: '1.31'}
+        for field in api_utils.V31_FIELDS:
+            cfg.CONF.set_override('enabled_%ss' % field, ['fake'])
+        for field in api_utils.V31_FIELDS:
+            node = {
+                'uuid': uuidutils.generate_uuid(),
+                field: 'fake',
+                'driver': 'fake-hardware'
+            }
+            result = self._test_create_node(headers=headers, **node)
+            self.assertEqual('fake', result[field])
+
+    def test_create_node_specify_interfaces_bad_version(self):
+        headers = {api_base.Version.string: '1.30'}
+        for field in api_utils.V31_FIELDS:
+            ndict = test_api_utils.post_get_test_node(**{field: 'fake'})
+            response = self.post_json('/nodes', ndict, headers=headers,
+                                      expect_errors=True)
+            self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_int)
+
+    def test_create_node_classic_driver_specify_interface(self):
+        headers = {api_base.Version.string: '1.31'}
+        for field in api_utils.V31_FIELDS:
+            node = {
+                'uuid': uuidutils.generate_uuid(),
+                field: 'fake',
+            }
+            ndict = test_api_utils.post_get_test_node(**node)
+            response = self.post_json('/nodes', ndict,
+                                      headers=headers,
+                                      expect_errors=True)
+            self.assertEqual(http_client.BAD_REQUEST, response.status_int)
+            self.assertEqual('application/json', response.content_type)
+            self.assertTrue(response.json['error_message'])
 
     def test_create_node_name_empty_invalid(self):
         ndict = test_api_utils.post_get_test_node(name='')
@@ -2345,20 +2473,119 @@ class TestPut(test_api_base.BaseApiTest):
         self.mock_dnih = p.start()
         self.addCleanup(p.stop)
 
-    def test_power_state(self):
-        response = self.put_json('/nodes/%s/states/power' % self.node.uuid,
-                                 {'target': states.POWER_ON})
+    def _test_power_state_success(self, target_state, timeout, api_version):
+        if timeout is None:
+            body = {'target': target_state}
+        else:
+            body = {'target': target_state, 'timeout': timeout}
+
+        if api_version is None:
+            response = self.put_json(
+                '/nodes/%s/states/power' % self.node.uuid, body)
+        else:
+            response = self.put_json(
+                '/nodes/%s/states/power' % self.node.uuid, body,
+                headers={api_base.Version.string: api_version})
+
         self.assertEqual(http_client.ACCEPTED, response.status_code)
         self.assertEqual(b'', response.body)
         self.mock_cnps.assert_called_once_with(mock.ANY,
                                                self.node.uuid,
-                                               states.POWER_ON,
-                                               'test-topic')
+                                               target_state,
+                                               timeout=timeout,
+                                               topic='test-topic')
         # Check location header
         self.assertIsNotNone(response.location)
         expected_location = '/v1/nodes/%s/states' % self.node.uuid
         self.assertEqual(urlparse.urlparse(response.location).path,
                          expected_location)
+
+    def _test_power_state_failure(self, target_state, http_status_code,
+                                  timeout, api_version):
+        if timeout is None:
+            body = {'target': target_state}
+        else:
+            body = {'target': target_state, 'timeout': timeout}
+
+        if api_version is None:
+            response = self.put_json(
+                '/nodes/%s/states/power' % self.node.uuid, body,
+                expect_errors=True)
+        else:
+            response = self.put_json(
+                '/nodes/%s/states/power' % self.node.uuid, body,
+                headers={api_base.Version.string: api_version},
+                expect_errors=True)
+
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_status_code, response.status_code)
+        self.assertTrue(response.json['error_message'])
+
+    def test_power_state_power_on_no_timeout_no_ver(self):
+        self._test_power_state_success(states.POWER_ON, None, None)
+
+    def test_power_state_power_on_no_timeout_valid_soft_ver(self):
+        self._test_power_state_success(states.POWER_ON, None, "1.27")
+
+    def test_power_state_power_on_no_timeout_invalid_soft_ver(self):
+        self._test_power_state_success(states.POWER_ON, None, "1.26")
+
+    def test_power_state_power_on_valid_timeout_no_ver(self):
+        self._test_power_state_failure(
+            states.POWER_ON, http_client.NOT_ACCEPTABLE, 2, None)
+
+    def test_power_state_power_on_valid_timeout_valid_soft_ver(self):
+        self._test_power_state_success(states.POWER_ON, 2, "1.27")
+
+    def test_power_state_power_on_valid_timeout_invalid_soft_ver(self):
+        self._test_power_state_failure(
+            states.POWER_ON, http_client.NOT_ACCEPTABLE, 2, "1.26")
+
+    def test_power_state_power_on_invalid_timeout_no_ver(self):
+        self._test_power_state_failure(
+            states.POWER_ON, http_client.BAD_REQUEST, 0, None)
+
+    def test_power_state_power_on_invalid_timeout_valid_soft_ver(self):
+        self._test_power_state_failure(
+            states.POWER_ON, http_client.BAD_REQUEST, 0, "1.27")
+
+    def test_power_state_power_on_invalid_timeout_invalid_soft_ver(self):
+        self._test_power_state_failure(
+            states.POWER_ON, http_client.BAD_REQUEST, 0, "1.26")
+
+    def test_power_state_soft_power_off_no_timeout_no_ver(self):
+        self._test_power_state_failure(
+            states.SOFT_POWER_OFF, http_client.NOT_ACCEPTABLE, None, None)
+
+    def test_power_state_soft_power_off_no_timeout_valid_soft_ver(self):
+        self._test_power_state_success(states.SOFT_POWER_OFF, None, "1.27")
+
+    def test_power_state_soft_power_off_no_timeout_invalid_soft_ver(self):
+        self._test_power_state_failure(
+            states.SOFT_POWER_OFF, http_client.NOT_ACCEPTABLE, None, "1.26")
+
+    def test_power_state_soft_power_off_valid_timeout_no_ver(self):
+        self._test_power_state_failure(
+            states.SOFT_POWER_OFF, http_client.NOT_ACCEPTABLE, 2, None)
+
+    def test_power_state_soft_power_off_valid_timeout_valid_soft_ver(self):
+        self._test_power_state_success(states.SOFT_POWER_OFF, 2, "1.27")
+
+    def test_power_state_soft_power_off_valid_timeout_invalid_soft_ver(self):
+        self._test_power_state_failure(
+            states.SOFT_POWER_OFF, http_client.NOT_ACCEPTABLE, 2, "1.26")
+
+    def test_power_state_soft_power_off_invalid_timeout_no_ver(self):
+        self._test_power_state_failure(
+            states.SOFT_POWER_OFF, http_client.NOT_ACCEPTABLE, 0, None)
+
+    def test_power_state_soft_power_off_invalid_timeout_valid_soft_ver(self):
+        self._test_power_state_failure(
+            states.SOFT_POWER_OFF, http_client.BAD_REQUEST, 0, "1.27")
+
+    def test_power_state_soft_power_off_invalid_timeout_invalid_soft_ver(self):
+        self._test_power_state_failure(
+            states.SOFT_POWER_OFF, http_client.NOT_ACCEPTABLE, 0, "1.26")
 
     def test_power_state_by_name_unsupported(self):
         response = self.put_json('/nodes/%s/states/power' % self.node.name,
@@ -2375,7 +2602,8 @@ class TestPut(test_api_base.BaseApiTest):
         self.mock_cnps.assert_called_once_with(mock.ANY,
                                                self.node.uuid,
                                                states.POWER_ON,
-                                               'test-topic')
+                                               timeout=None,
+                                               topic='test-topic')
         # Check location header
         self.assertIsNotNone(response.location)
         expected_location = '/v1/nodes/%s/states' % self.node.name
@@ -2963,6 +3191,39 @@ class TestPut(test_api_base.BaseApiTest):
         self.assertEqual('application/json', ret.content_type)
         self.assertEqual(http_client.BAD_REQUEST, ret.status_code)
 
+    @mock.patch.object(rpcapi.ConductorAPI, 'inject_nmi')
+    def test_inject_nmi(self, mock_inject_nmi):
+        ret = self.put_json('/nodes/%s/management/inject_nmi'
+                            % self.node.uuid, {},
+                            headers={api_base.Version.string: "1.29"})
+        self.assertEqual(http_client.NO_CONTENT, ret.status_code)
+        self.assertEqual(b'', ret.body)
+        mock_inject_nmi.assert_called_once_with(mock.ANY, self.node.uuid,
+                                                topic='test-topic')
+
+    @mock.patch.object(rpcapi.ConductorAPI, 'inject_nmi')
+    def test_inject_nmi_not_allowed(self, mock_inject_nmi):
+        ret = self.put_json('/nodes/%s/management/inject_nmi'
+                            % self.node.uuid, {},
+                            headers={api_base.Version.string: "1.28"},
+                            expect_errors=True)
+        self.assertEqual(http_client.NOT_FOUND, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+        self.assertFalse(mock_inject_nmi.called)
+
+    @mock.patch.object(rpcapi.ConductorAPI, 'inject_nmi')
+    def test_inject_nmi_not_supported(self, mock_inject_nmi):
+        mock_inject_nmi.side_effect = exception.UnsupportedDriverExtension(
+            extension='management', driver='test-driver')
+        ret = self.put_json('/nodes/%s/management/inject_nmi'
+                            % self.node.uuid, {},
+                            headers={api_base.Version.string: "1.29"},
+                            expect_errors=True)
+        self.assertEqual(http_client.BAD_REQUEST, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+        mock_inject_nmi.assert_called_once_with(mock.ANY, self.node.uuid,
+                                                topic='test-topic')
+
     def _test_set_node_maintenance_mode(self, mock_update, mock_get, reason,
                                         node_ident, is_by_name=False):
         request_body = {}
@@ -3107,3 +3368,227 @@ class TestCheckCleanSteps(base.TestCase):
 
         step2 = {"step": "configure raid", "interface": "raid"}
         api_node._check_clean_steps([step1, step2])
+
+
+class TestAttachDetachVif(test_api_base.BaseApiTest):
+
+    def setUp(self):
+        super(TestAttachDetachVif, self).setUp()
+        self.vif_version = "1.28"
+        self.node = obj_utils.create_test_node(
+            self.context,
+            provision_state=states.AVAILABLE, name='node-39')
+        p = mock.patch.object(rpcapi.ConductorAPI, 'get_topic_for')
+        self.mock_gtf = p.start()
+        self.mock_gtf.return_value = 'test-topic'
+        self.addCleanup(p.stop)
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    def test_vif_subcontroller_old_version(self, mock_get):
+        mock_get.return_value = self.node
+        ret = self.get_json('/nodes/%s/vifs' % self.node.uuid,
+                            headers={api_base.Version.string: "1.26"},
+                            expect_errors=True)
+        self.assertEqual(http_client.NOT_FOUND, ret.status_code)
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_list')
+    def test_vif_list(self, mock_list, mock_get):
+        mock_get.return_value = self.node
+        self.get_json('/nodes/%s/vifs' % self.node.uuid,
+                      headers={api_base.Version.string:
+                               self.vif_version})
+
+        mock_get.assert_called_once_with(mock.ANY, self.node.uuid)
+        mock_list.assert_called_once_with(mock.ANY, self.node.uuid,
+                                          topic='test-topic')
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_attach')
+    def test_vif_attach(self, mock_attach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+        request_body = {
+            'id': vif_id
+        }
+
+        mock_get.return_value = self.node
+
+        ret = self.post_json('/nodes/%s/vifs' % self.node.uuid,
+                             request_body,
+                             headers={api_base.Version.string:
+                                      self.vif_version})
+
+        self.assertEqual(http_client.NO_CONTENT, ret.status_code)
+        mock_get.assert_called_once_with(mock.ANY, self.node.uuid)
+        mock_attach.assert_called_once_with(mock.ANY, self.node.uuid,
+                                            vif_info=request_body,
+                                            topic='test-topic')
+
+    @mock.patch.object(objects.Node, 'get_by_name')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_attach')
+    def test_vif_attach_by_node_name(self, mock_attach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+        request_body = {
+            'id': vif_id
+        }
+
+        mock_get.return_value = self.node
+
+        ret = self.post_json('/nodes/%s/vifs' % self.node.name,
+                             request_body,
+                             headers={api_base.Version.string:
+                                      self.vif_version})
+
+        self.assertEqual(http_client.NO_CONTENT, ret.status_code)
+        mock_get.assert_called_once_with(mock.ANY, self.node.name)
+        mock_attach.assert_called_once_with(mock.ANY, self.node.uuid,
+                                            vif_info=request_body,
+                                            topic='test-topic')
+
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_attach')
+    def test_vif_attach_node_not_found(self, mock_attach):
+        vif_id = uuidutils.generate_uuid()
+        request_body = {
+            'id': vif_id
+        }
+
+        ret = self.post_json('/nodes/doesntexist/vifs',
+                             request_body, expect_errors=True,
+                             headers={api_base.Version.string:
+                                      self.vif_version})
+
+        self.assertEqual(http_client.NOT_FOUND, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+        self.assertFalse(mock_attach.called)
+
+    @mock.patch.object(objects.Node, 'get_by_name')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_attach')
+    def test_vif_attach_conductor_unavailable(self, mock_attach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+        request_body = {
+            'id': vif_id
+        }
+        mock_get.return_value = self.node
+        self.mock_gtf.side_effect = exception.NoValidHost('boom')
+        ret = self.post_json('/nodes/%s/vifs' % self.node.name,
+                             request_body, expect_errors=True,
+                             headers={api_base.Version.string:
+                                      self.vif_version})
+
+        self.assertEqual(http_client.BAD_REQUEST, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+        self.assertFalse(mock_attach.called)
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_attach')
+    def test_vif_attach_no_vif_id(self, mock_attach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+        request_body = {
+            'bad_id': vif_id
+        }
+
+        mock_get.return_value = self.node
+
+        ret = self.post_json('/nodes/%s/vifs' % self.node.uuid,
+                             request_body, expect_errors=True,
+                             headers={api_base.Version.string:
+                                      self.vif_version})
+
+        self.assertEqual(http_client.BAD_REQUEST, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_attach')
+    def test_vif_attach_invalid_vif_id(self, mock_attach, mock_get):
+        request_body = {
+            'id': "invalid%id^"
+        }
+
+        mock_get.return_value = self.node
+
+        ret = self.post_json('/nodes/%s/vifs' % self.node.uuid,
+                             request_body, expect_errors=True,
+                             headers={api_base.Version.string:
+                                      self.vif_version})
+
+        self.assertEqual(http_client.BAD_REQUEST, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_attach')
+    def test_vif_attach_node_locked(self, mock_attach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+        request_body = {
+            'id': vif_id
+        }
+
+        mock_get.return_value = self.node
+        mock_attach.side_effect = exception.NodeLocked(node='', host='')
+
+        ret = self.post_json('/nodes/%s/vifs' % self.node.uuid,
+                             request_body, expect_errors=True,
+                             headers={api_base.Version.string:
+                                      self.vif_version})
+
+        self.assertEqual(http_client.CONFLICT, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_detach')
+    def test_vif_detach(self, mock_detach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+
+        mock_get.return_value = self.node
+
+        ret = self.delete('/nodes/%s/vifs/%s' % (self.node.uuid, vif_id),
+                          headers={api_base.Version.string:
+                                   self.vif_version})
+
+        self.assertEqual(http_client.NO_CONTENT, ret.status_code)
+        mock_get.assert_called_once_with(mock.ANY, self.node.uuid)
+        mock_detach.assert_called_once_with(mock.ANY, self.node.uuid,
+                                            vif_id=vif_id,
+                                            topic='test-topic')
+
+    @mock.patch.object(objects.Node, 'get_by_name')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_detach')
+    def test_vif_detach_by_node_name(self, mock_detach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+
+        mock_get.return_value = self.node
+
+        ret = self.delete('/nodes/%s/vifs/%s' % (self.node.name, vif_id),
+                          headers={api_base.Version.string: self.vif_version})
+
+        self.assertEqual(http_client.NO_CONTENT, ret.status_code)
+        mock_get.assert_called_once_with(mock.ANY, self.node.name)
+        mock_detach.assert_called_once_with(mock.ANY, self.node.uuid,
+                                            vif_id=vif_id,
+                                            topic='test-topic')
+
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_detach')
+    def test_vif_detach_node_not_found(self, mock_detach):
+        vif_id = uuidutils.generate_uuid()
+
+        ret = self.delete('/nodes/doesntexist/vifs/%s' % vif_id,
+                          headers={api_base.Version.string: self.vif_version},
+                          expect_errors=True)
+
+        self.assertEqual(http_client.NOT_FOUND, ret.status_code)
+        self.assertTrue(ret.json['error_message'])
+        self.assertFalse(mock_detach.called)
+
+    @mock.patch.object(objects.Node, 'get_by_uuid')
+    @mock.patch.object(rpcapi.ConductorAPI, 'vif_detach')
+    def test_vif_detach_node_locked(self, mock_detach, mock_get):
+        vif_id = uuidutils.generate_uuid()
+
+        mock_get.return_value = self.node
+        mock_detach.side_effect = exception.NodeLocked(node='', host='')
+
+        ret = self.delete('/nodes/%s/vifs/%s' % (self.node.uuid, vif_id),
+                          headers={api_base.Version.string: self.vif_version},
+                          expect_errors=True)
+
+        self.assertEqual(http_client.CONFLICT, ret.status_code)
+        self.assertTrue(ret.json['error_message'])

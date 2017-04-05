@@ -17,6 +17,7 @@ iptables
 ipxe
 gnupg
 libguestfs0
+libguestfs-tools
 libvirt-bin
 open-iscsi
 openssh-client
@@ -35,3 +36,4 @@ xinetd
 squashfs-tools
 libvirt-dev
 socat
+ipxe-qemu

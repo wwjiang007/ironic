@@ -22,6 +22,7 @@ from oslo_utils import importutils
 from ironic.common import exception
 from ironic.common.i18n import _
 from ironic.drivers import base
+from ironic.drivers import ipmi
 from ironic.drivers.modules import agent
 from ironic.drivers.modules.cimc import management as cimc_mgmt
 from ironic.drivers.modules.cimc import power as cimc_power
@@ -32,62 +33,21 @@ from ironic.drivers.modules.ilo import management as ilo_management
 from ironic.drivers.modules.ilo import power as ilo_power
 from ironic.drivers.modules.ilo import vendor as ilo_vendor
 from ironic.drivers.modules import inspector
-from ironic.drivers.modules import ipminative
 from ironic.drivers.modules import ipmitool
 from ironic.drivers.modules.irmc import inspect as irmc_inspect
 from ironic.drivers.modules.irmc import management as irmc_management
 from ironic.drivers.modules.irmc import power as irmc_power
 from ironic.drivers.modules import iscsi_deploy
-from ironic.drivers.modules.msftocs import management as msftocs_management
-from ironic.drivers.modules.msftocs import power as msftocs_power
 from ironic.drivers.modules import pxe
-from ironic.drivers.modules import seamicro
 from ironic.drivers.modules import snmp
 from ironic.drivers.modules import ssh
 from ironic.drivers.modules.ucs import management as ucs_mgmt
 from ironic.drivers.modules.ucs import power as ucs_power
-from ironic.drivers.modules import virtualbox
 
 
-class PXEAndIPMIToolDriver(base.BaseDriver):
-    """PXE + IPMITool driver.
-
-    This driver implements the `core` functionality, combining
-    :class:`ironic.drivers.modules.ipmi.IPMI` for power on/off
-    and reboot with
-    :class:`ironic.drivers.modules.iscsi_deploy.ISCSIDeploy` for
-    image deployment. Implementations are in those respective
-    classes; this class is merely the glue between them.
-    """
-    def __init__(self):
-        self.power = ipmitool.IPMIPower()
-        self.console = ipmitool.IPMIShellinaboxConsole()
-        self.boot = pxe.PXEBoot()
-        self.deploy = iscsi_deploy.ISCSIDeploy()
-        self.management = ipmitool.IPMIManagement()
-        self.inspect = inspector.Inspector.create_if_enabled(
-            'PXEAndIPMIToolDriver')
-        self.vendor = ipmitool.VendorPassthru()
-        self.raid = agent.AgentRAID()
-
-
-class PXEAndIPMIToolAndSocatDriver(PXEAndIPMIToolDriver):
-    """PXE + IPMITool + socat driver.
-
-    This driver implements the `core` functionality, combining
-    :class:`ironic.drivers.modules.ipmi.IPMI` for power on/off
-    and reboot with
-    :class:`ironic.drivers.modules.iscsi_deploy.ISCSIDeploy` (for
-    image deployment) and with
-    :class:`ironic.drivers.modules.ipmitool.IPMISocatConsole`.
-    This driver uses the socat console interface instead of the shellinabox
-    one.
-    Implementations are in those respective
-    classes; this class is merely the glue between them.
-    """
-    def __init__(self):
-        PXEAndIPMIToolDriver.__init__(self)
-        self.console = ipmitool.IPMISocatConsole()
+# For backward compatibility
+PXEAndIPMIToolDriver = ipmi.PXEAndIPMIToolDriver
+PXEAndIPMIToolAndSocatDriver = ipmi.PXEAndIPMIToolAndSocatDriver
 
 
 class PXEAndSSHDriver(base.BaseDriver):
@@ -114,61 +74,6 @@ class PXEAndSSHDriver(base.BaseDriver):
             'PXEAndSSHDriver')
         self.raid = agent.AgentRAID()
         self.console = ssh.ShellinaboxConsole()
-
-
-class PXEAndIPMINativeDriver(base.BaseDriver):
-    """PXE + Native IPMI driver.
-
-    This driver implements the `core` functionality, combining
-    :class:`ironic.drivers.modules.ipminative.NativeIPMIPower`
-    for power on/off and reboot with
-    :class:`ironic.drivers.modules.iscsi_deploy.ISCSIDeploy`
-    for image deployment.  Implementations are in those respective
-    classes; this class is merely the glue between them.
-    """
-
-    supported = False
-
-    def __init__(self):
-        if not importutils.try_import('pyghmi'):
-            raise exception.DriverLoadError(
-                driver=self.__class__.__name__,
-                reason=_("Unable to import pyghmi library"))
-        self.power = ipminative.NativeIPMIPower()
-        self.console = ipminative.NativeIPMIShellinaboxConsole()
-        self.boot = pxe.PXEBoot()
-        self.deploy = iscsi_deploy.ISCSIDeploy()
-        self.management = ipminative.NativeIPMIManagement()
-        self.vendor = ipminative.VendorPassthru()
-        self.inspect = inspector.Inspector.create_if_enabled(
-            'PXEAndIPMINativeDriver')
-        self.raid = agent.AgentRAID()
-
-
-class PXEAndSeaMicroDriver(base.BaseDriver):
-    """PXE + SeaMicro driver.
-
-    This driver implements the `core` functionality, combining
-    :class:`ironic.drivers.modules.seamicro.Power` for power
-    on/off and reboot with
-    :class:`ironic.drivers.modules.iscsi_deploy.ISCSIDeploy`
-    for image deployment.  Implementations are in those respective
-    classes; this class is merely the glue between them.
-    """
-
-    supported = False
-
-    def __init__(self):
-        if not importutils.try_import('seamicroclient'):
-            raise exception.DriverLoadError(
-                driver=self.__class__.__name__,
-                reason=_("Unable to import seamicroclient library"))
-        self.power = seamicro.Power()
-        self.boot = pxe.PXEBoot()
-        self.deploy = iscsi_deploy.ISCSIDeploy()
-        self.management = seamicro.Management()
-        self.vendor = seamicro.VendorPassthru()
-        self.console = seamicro.ShellinaboxConsole()
 
 
 class PXEAndIloDriver(base.BaseDriver):
@@ -239,52 +144,6 @@ class PXEAndIRMCDriver(base.BaseDriver):
         self.deploy = iscsi_deploy.ISCSIDeploy()
         self.management = irmc_management.IRMCManagement()
         self.inspect = irmc_inspect.IRMCInspect()
-
-
-class PXEAndVirtualBoxDriver(base.BaseDriver):
-    """PXE + VirtualBox driver.
-
-    NOTE: This driver is meant only for testing environments.
-
-    This driver implements the `core` functionality, combining
-    :class:`ironic.drivers.virtualbox.VirtualBoxPower` for power on/off and
-    reboot of VirtualBox virtual machines, with
-    :class:`ironic.drivers.modules.iscsi_deploy.ISCSIDeploy` for image
-    deployment. Implementations are in those respective classes;
-    this class is merely the glue between them.
-    """
-
-    supported = False
-
-    def __init__(self):
-        if not importutils.try_import('pyremotevbox'):
-            raise exception.DriverLoadError(
-                driver=self.__class__.__name__,
-                reason=_("Unable to import pyremotevbox library"))
-        self.power = virtualbox.VirtualBoxPower()
-        self.boot = pxe.PXEBoot()
-        self.deploy = iscsi_deploy.ISCSIDeploy()
-        self.management = virtualbox.VirtualBoxManagement()
-        self.raid = agent.AgentRAID()
-
-
-class PXEAndMSFTOCSDriver(base.BaseDriver):
-    """PXE + MSFT OCS driver.
-
-    This driver implements the `core` functionality, combining
-    :class:`ironic.drivers.modules.msftocs.power.MSFTOCSPower` for power on/off
-    and reboot with :class:`ironic.drivers.modules.iscsi_deploy.ISCSIDeploy`
-    for image deployment.  Implementations are in those respective classes;
-    this class is merely the glue between them.
-    """
-
-    supported = False
-
-    def __init__(self):
-        self.power = msftocs_power.MSFTOCSPower()
-        self.boot = pxe.PXEBoot()
-        self.deploy = iscsi_deploy.ISCSIDeploy()
-        self.management = msftocs_management.MSFTOCSManagement()
 
 
 class PXEAndUcsDriver(base.BaseDriver):

@@ -8,7 +8,7 @@ Overview
 ========
 iLO drivers enable to take advantage of features of iLO management engine in
 HPE ProLiant servers.  iLO drivers are targeted for HPE ProLiant Gen 8 systems
-and above which have `iLO 4 management engine <http://www8.hp.com/us/en/products/servers/ilo>`_.
+and above which have `iLO 4 management engine <https://www.hpe.com/us/en/servers/integrated-lights-out-ilo.html>`_.
 
 For more details, please refer the iLO driver document of Juno, Kilo and Liberty releases,
 and for up-to-date information (like tested platforms, known issues, etc), please check the
@@ -22,8 +22,8 @@ Currently there are 3 iLO drivers:
 
 The ``iscsi_ilo`` and ``agent_ilo`` drivers provide security enhanced
 PXE-less deployment by using iLO virtual media to boot up the bare metal node.
-These drivers send management info through management channel and separates
-it from data channel which is used for deployment.
+These drivers send management info through the management channel and separate
+it from the data channel which is used for deployment.
 
 ``iscsi_ilo`` and ``agent_ilo`` drivers use deployment ramdisk
 built from ``diskimage-builder``. The ``iscsi_ilo`` driver deploys from
@@ -40,12 +40,12 @@ Prerequisites
 =============
 
 * `proliantutils <https://pypi.python.org/pypi/proliantutils>`_ is a python package
-  which contains set of modules for managing HPE ProLiant hardware.
+  which contains a set of modules for managing HPE ProLiant hardware.
 
   Install ``proliantutils`` module on the ironic conductor node. Minimum
-  version required is 2.1.11::
+  version required is 2.2.1::
 
-   $ pip install "proliantutils>=2.1.11"
+   $ pip install "proliantutils>=2.2.1"
 
 * ``ipmitool`` command must be present on the service node(s) where
   ``ironic-conductor`` is running. On most distros, this is provided as part
@@ -148,7 +148,7 @@ Web server configuration on conductor
 ``use_web_server_for_images``: If the variable is set to ``false``, ``iscsi_ilo``
 and ``agent_ilo`` uses swift containers to host the intermediate floppy
 image and the boot ISO. If the variable is set to ``true``, these drivers
-uses the local web server for hosting the intermediate files. The default value
+use the local web server for hosting the intermediate files. The default value
 for ``use_web_server_for_images`` is False.
 
 ``http_url``: The value for this variable is prefixed with the generated
@@ -201,7 +201,7 @@ PXE or iPXE.
 Target Users
 ~~~~~~~~~~~~
 
-* Users who do not want to use PXE/TFTP protocol on their data centres.
+* Users who do not want to use PXE/TFTP protocol in their data centers.
 
 * Users who have concerns with PXE protocol's security issues and want to have a
   security enhanced PXE-less deployment mechanism.
@@ -903,8 +903,34 @@ The following iLO drivers support hardware inspection:
 
 .. note::
 
-   * The RAID needs to be pre-configured prior to inspection otherwise
-     proliantutils returns 0 for disk size.
+   * The disk size is returned by RIBCL/RIS only when RAID is preconfigured
+     on the storage. If the storage is Direct Attached Storage, then
+     RIBCL/RIS fails to get the disk size.
+   * The SNMPv3 inspection gets disk size for all types of storages.
+     If RIBCL/RIS is unable to get disk size and SNMPv3 inspection is
+     requested, the proliantutils does SNMPv3 inspection to get the
+     disk size. If proliantutils is unable to get the disk size, it raises
+     an error. This feature is available in proliantutils release
+     version >= 2.2.0.
+   * The iLO must be updated with SNMPv3 authentication details.
+     Refer to the section `SNMPv3 Authentication` in `HPE iLO4 User Guide`_
+     for setting up authentication details on iLO.
+     The  following parameters are mandatory to be given in driver_info
+     for SNMPv3 inspection:
+
+     * ``snmp_auth_user`` : The SNMPv3 user.
+
+     * ``snmp_auth_prot_password`` : The auth protocol pass phrase.
+
+     * ``snmp_auth_priv_password`` : The privacy protocol pass phrase.
+
+     The  following parameters are optional for SNMPv3 inspection:
+
+     * ``snmp_auth_protocol`` : The Auth Protocol. The valid values
+       are "MD5" and "SHA". The iLO default value is "MD5".
+
+     * ``snmp_auth_priv_protocol`` : The Privacy protocol. The valid
+       values are "AES" and "DES". The iLO default value is "DES".
 
 The inspection process will discover the following essential properties
 (properties required for scheduling deployment):
@@ -1565,3 +1591,4 @@ use the ``proliant-tools`` element in DIB::
 
 .. _`Enabling HTTPS in Swift`: http://docs.openstack.org/project-install-guide/baremetal/draft/enabling-https.html#enabling-https-in-swift
 .. _`Enabling HTTPS in Image service`: http://docs.openstack.org/project-install-guide/baremetal/draft/enabling-https.html#enabling-https-in-image-service
+.. _`HPE iLO4 User Guide`: http://h20566.www2.hpe.com/hpsc/doc/public/display?docId=c03334051

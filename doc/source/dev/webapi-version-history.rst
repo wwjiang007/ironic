@@ -2,6 +2,83 @@
 REST API Version History
 ========================
 
+**1.31** (Ocata)
+
+    Added the following fields to the node object, to allow getting and
+    setting interfaces for a dynamic driver:
+
+    * boot_interface
+    * console_interface
+    * deploy_interface
+    * inspect_interface
+    * management_interface
+    * power_interface
+    * raid_interface
+    * vendor_interface
+
+**1.30** (Ocata)
+
+    Added dynamic driver APIs.
+
+    * GET /v1/drivers now accepts a ``type`` parameter (optional, one of
+      ``classic`` or ``dynamic``), to limit the result to only classic drivers
+      or dynamic drivers (hardware types). Without this parameter, both
+      classic and dynamic drivers are returned.
+
+    * GET /v1/drivers now accepts a ``detail`` parameter (optional, one of
+      ``True`` or ``False``), to show all fields for a driver. Defaults to
+      ``False``.
+
+    * GET /v1/drivers now returns an additional ``type`` field to show if the
+      driver is classic or dynamic.
+
+    * GET /v1/drivers/<name> now returns an additional ``type`` field to show
+      if the driver is classic or dynamic.
+
+    * GET /v1/drivers/<name> now returns additional fields that are null for
+      classic drivers, and set as following for dynamic drivers:
+
+        * The value of the default_<interface-type>_interface is the entrypoint
+          name of the calculated default interface for that type:
+
+            * default_boot_interface
+            * default_console_interface
+            * default_deploy_interface
+            * default_inspect_interface
+            * default_management_interface
+            * default_network_interface
+            * default_power_interface
+            * default_raid_interface
+            * default_vendor_interface
+
+        * The value of the enabled_<interface-type>_interfaces is a list of
+          entrypoint names of the enabled interfaces for that type:
+
+            * enabled_boot_interfaces
+            * enabled_console_interfaces
+            * enabled_deploy_interfaces
+            * enabled_inspect_interfaces
+            * enabled_management_interfaces
+            * enabled_network_interfaces
+            * enabled_power_interfaces
+            * enabled_raid_interfaces
+            * enabled_vendor_interfaces
+
+**1.29** (Ocata)
+
+    Add a new management API to support inject NMI,
+    'PUT /v1/nodes/(node_ident)/management/inject_nmi'.
+
+**1.28** (Ocata)
+
+    Add '/v1/nodes/<node identifier>/vifs' endpoint for attach, detach and list of VIFs.
+
+**1.27** (Ocata)
+
+    Add ``soft rebooting`` and ``soft power off`` as possible values
+    for the ``target`` field of the power state change payload, and
+    also add ``timeout`` field to it.
+
 **1.26** (Ocata)
 
     Add portgroup ``mode`` and ``properties`` fields.

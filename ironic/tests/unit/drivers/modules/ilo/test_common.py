@@ -72,14 +72,87 @@ class IloValidateParametersTestCase(db_base.DbTestCase):
         self.assertEqual(60, info['client_timeout'])
         self.assertEqual(443, info['client_port'])
         self.assertEqual('/home/user/cafile.pem', info['ca_file'])
+        self.assertEqual('user', info['snmp_auth_user'])
+        self.assertEqual('1234', info['snmp_auth_prot_password'])
+        self.assertEqual('4321', info['snmp_auth_priv_password'])
+        self.assertEqual('SHA', info['snmp_auth_protocol'])
+        self.assertEqual('AES', info['snmp_auth_priv_protocol'])
 
-    def test_parse_driver_info_ca_file_in_driver_info(self):
-        self.node.driver_info['ca_file'] = '/home/user/cafile.pem'
+    @mock.patch.object(os.path, 'isfile', return_value=True, autospec=True)
+    def test_parse_driver_info_snmp_inspection_false(self, isFile_mock):
+        info = ilo_common.parse_driver_info(self.node)
+        self.assertEqual(INFO_DICT['ilo_address'], info['ilo_address'])
+        self.assertEqual(INFO_DICT['ilo_username'], info['ilo_username'])
+        self.assertEqual(INFO_DICT['ilo_password'], info['ilo_password'])
+        self.assertEqual(60, info['client_timeout'])
+        self.assertEqual(443, info['client_port'])
+
+    @mock.patch.object(os.path, 'isfile', return_value=True, autospec=True)
+    def test_parse_driver_info_snmp_true_no_auth_priv_protocols(self,
+                                                                isFile_mock):
+        d_info = {'ca_file': '/home/user/cafile.pem',
+                  'snmp_auth_prot_password': '1234',
+                  'snmp_auth_user': 'user',
+                  'snmp_auth_priv_password': '4321'}
+        self.node.driver_info.update(d_info)
+        info = ilo_common.parse_driver_info(self.node)
+        self.assertEqual(INFO_DICT['ilo_address'], info['ilo_address'])
+        self.assertEqual(INFO_DICT['ilo_username'], info['ilo_username'])
+        self.assertEqual(INFO_DICT['ilo_password'], info['ilo_password'])
+        self.assertEqual(60, info['client_timeout'])
+        self.assertEqual(443, info['client_port'])
+        self.assertEqual('/home/user/cafile.pem', info['ca_file'])
+        self.assertEqual('user', info['snmp_auth_user'])
+        self.assertEqual('1234', info['snmp_auth_prot_password'])
+        self.assertEqual('4321', info['snmp_auth_priv_password'])
+
+    def test_parse_driver_info_ca_file_and_snmp_inspection_true(self):
+        d_info = {'ca_file': '/home/user/cafile.pem',
+                  'snmp_auth_prot_password': '1234',
+                  'snmp_auth_user': 'user',
+                  'snmp_auth_priv_password': '4321',
+                  'snmp_auth_protocol': 'SHA',
+                  'snmp_auth_priv_protocol': 'AES'}
+        self.node.driver_info.update(d_info)
         self._test_parse_driver_info()
 
-    def test_parse_driver_info_ca_file_in_conf_file(self):
-        self.config(ca_file='/home/user/cafile.pem', group='ilo')
-        self._test_parse_driver_info()
+    def test_parse_driver_info_snmp_true_invalid_auth_protocol(self):
+        d_info = {'ca_file': '/home/user/cafile.pem',
+                  'snmp_auth_prot_password': '1234',
+                  'snmp_auth_user': 'user',
+                  'snmp_auth_priv_password': '4321',
+                  'snmp_auth_protocol': 'abc',
+                  'snmp_auth_priv_protocol': 'AES'}
+        self.node.driver_info.update(d_info)
+        self.assertRaises(exception.InvalidParameterValue,
+                          ilo_common.parse_driver_info, self.node)
+
+    def test_parse_driver_info_snmp_true_invalid_priv_protocol(self):
+        d_info = {'ca_file': '/home/user/cafile.pem',
+                  'snmp_auth_prot_password': '1234',
+                  'snmp_auth_user': 'user',
+                  'snmp_auth_priv_password': '4321',
+                  'snmp_auth_protocol': 'SHA',
+                  'snmp_auth_priv_protocol': 'xyz'}
+        self.node.driver_info.update(d_info)
+        self.assertRaises(exception.InvalidParameterValue,
+                          ilo_common.parse_driver_info, self.node)
+
+    def test_parse_driver_info_snmp_true_integer_auth_protocol(self):
+        d_info = {'ca_file': '/home/user/cafile.pem',
+                  'snmp_auth_prot_password': '1234',
+                  'snmp_auth_user': 'user',
+                  'snmp_auth_priv_password': '4321',
+                  'snmp_auth_protocol': 12,
+                  'snmp_auth_priv_protocol': 'AES'}
+        self.node.driver_info.update(d_info)
+        self.assertRaises(exception.InvalidParameterValue,
+                          ilo_common.parse_driver_info, self.node)
+
+    def test_parse_driver_info_snmp_inspection_true_raises(self):
+        self.node.driver_info['snmp_auth_user'] = 'abc'
+        self.assertRaises(exception.MissingParameterValue,
+                          ilo_common.parse_driver_info, self.node)
 
     def test_parse_driver_info_missing_address(self):
         del self.node.driver_info['ilo_address']
@@ -162,7 +235,40 @@ class IloCommonMethodsTestCase(db_base.DbTestCase):
             self.info['ilo_password'],
             self.info['client_timeout'],
             self.info['client_port'],
-            cacert=self.info['ca_file'])
+            cacert=self.info['ca_file'],
+            snmp_credentials=None)
+        self.assertEqual('ilo_object', returned_ilo_object)
+
+    @mock.patch.object(os.path, 'isfile', return_value=True, autospec=True)
+    @mock.patch.object(ilo_client, 'IloClient', spec_set=True,
+                       autospec=True)
+    def test_get_ilo_object_snmp(self, ilo_client_mock, isFile_mock):
+        info = {'auth_user': 'user',
+                'auth_prot_pp': '1234',
+                'auth_priv_pp': '4321',
+                'auth_protocol': 'SHA',
+                'priv_protocol': 'AES',
+                'snmp_inspection': True}
+        d_info = {'client_timeout': 600,
+                  'client_port': 4433,
+                  'ca_file': 'ca_file',
+                  'snmp_auth_user': 'user',
+                  'snmp_auth_prot_password': '1234',
+                  'snmp_auth_priv_password': '4321',
+                  'snmp_auth_protocol': 'SHA',
+                  'snmp_auth_priv_protocol': 'AES'}
+        self.info.update(d_info)
+        self.node.driver_info = self.info
+        ilo_client_mock.return_value = 'ilo_object'
+        returned_ilo_object = ilo_common.get_ilo_object(self.node)
+        ilo_client_mock.assert_called_with(
+            self.info['ilo_address'],
+            self.info['ilo_username'],
+            self.info['ilo_password'],
+            self.info['client_timeout'],
+            self.info['client_port'],
+            cacert=self.info['ca_file'],
+            snmp_credentials=info)
         self.assertEqual('ilo_object', returned_ilo_object)
 
     def test_get_ilo_object_cafile(self):
@@ -811,7 +917,7 @@ class IloCommonMethodsTestCase(db_base.DbTestCase):
         swift_obj_mock = swift_api_mock.return_value
         object_name = 'object_name'
         raised_exc = exception.SwiftObjectNotFoundError(
-            operation='delete_object', object=object_name, container=container)
+            operation='delete_object', obj=object_name, container=container)
         swift_obj_mock.delete_object.side_effect = raised_exc
         # | WHEN |
         ilo_common.remove_image_from_swift(object_name)

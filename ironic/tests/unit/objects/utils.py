@@ -13,11 +13,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 """Ironic object test utilities."""
+import inspect
+
 import six
 
 from ironic.common import exception
 from ironic.common.i18n import _
 from ironic import objects
+from ironic.objects import notification
 from ironic.tests.unit.db import utils as db_utils
 
 
@@ -215,3 +218,54 @@ def create_test_volume_target(ctxt, **kw):
     volume_target = get_test_volume_target(ctxt, **kw)
     volume_target.create()
     return volume_target
+
+
+def get_payloads_with_schemas(from_module):
+    """Get the Payload classes with SCHEMAs defined.
+
+    :param from_module: module from which to get the classes.
+    :returns: list of Payload classes that have SCHEMAs defined.
+
+    """
+    payloads = []
+    for name, payload in inspect.getmembers(from_module, inspect.isclass):
+        # Assume that Payload class names end in 'Payload'.
+        if name.endswith("Payload"):
+            base_classes = inspect.getmro(payload)
+            if notification.NotificationPayloadBase not in base_classes:
+                # The class may have the desired name but it isn't a REAL
+                # Payload class; skip it.
+                continue
+
+            # First class is this payload class, parent class is the 2nd
+            # one in the tuple
+            parent = base_classes[1]
+            if (not hasattr(parent, 'SCHEMA') or
+                parent.SCHEMA != payload.SCHEMA):
+                payloads.append(payload)
+
+    return payloads
+
+
+class SchemasTestMixIn(object):
+    def _check_payload_schemas(self, from_module, fields):
+        """Assert that the Payload SCHEMAs have the expected properties.
+
+           A payload's SCHEMA should:
+
+           1. Have each of its keys in the payload's fields
+           2. Have each member of the schema match with a corresponding field
+           in the object
+        """
+        resource = from_module.__name__.split('.')[-1]
+        payloads = get_payloads_with_schemas(from_module)
+        for payload in payloads:
+            for schema_key in payload.SCHEMA:
+                self.assertIn(schema_key, payload.fields,
+                              "for %s, schema key %s is not in fields"
+                              % (payload, schema_key))
+                key = payload.SCHEMA[schema_key][1]
+                self.assertIn(key, fields,
+                              "for %s, schema key %s has invalid %s "
+                              "field %s" % (payload, schema_key, resource,
+                                            key))

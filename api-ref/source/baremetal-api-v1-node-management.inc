@@ -28,7 +28,7 @@ For example, a Node in the ``available`` state can have an instance deployed to 
 by requesting the provision state of ``active``. During this transition, the Node's
 ``provision_state`` will temporarily be set to ``deploying``, and depending on the driver,
 it may also be ``wait call-back``. When the transitions are complete, ``target_provision_state``
-will be set to ``None`` and ``provision_state`` will be set to ``active```.
+will be set to ``None`` and ``provision_state`` will be set to ``active``.
 To destroy the instance, request the provision state of ``delete``. During this
 transition, the Node may or may not go through a ``cleaning`` state,
 depending on the service configuration.
@@ -223,6 +223,36 @@ Response
 .. literalinclude:: samples/node-get-supported-boot-devices-response.json
 
 
+Inject NMI (Non-Masking Interrupts)
+===================================
+
+.. rest_method:: PUT /v1/nodes/{node_ident}/management/inject_nmi
+
+Inject NMI (Non-Masking Interrupts) for the given Node. This feature
+can be used for hardware diagnostics, and actual support depends on a
+driver.
+
+Normal response code: 204 (No content)
+
+Error codes:
+    - 400 (Invalid)
+    - 403 (Forbidden)
+    - 404 (NotFound)
+    - 406 (NotAcceptable)
+    - 409 (NodeLocked, ClientError)
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+    - node_ident: node_ident
+
+**Request to inject NMI to a node has to be empty dictionary:**
+
+.. literalinclude:: samples/node-inject-nmi.json
+
+
 Node State Summary
 ==================
 
@@ -266,11 +296,11 @@ Change Node Power State
 
 Request a change to the Node's power state.
 
-Normal response code: 202
+Normal response code: 202 (Accepted)
 
 Error codes:
     - 409 (NodeLocked, ClientError)
-    - 400 (InvalidState)
+    - 400 (Invalid, InvalidStateRequested, InvalidParameterValue)
     - 406 (NotAcceptable)
     - 503 (NoFreeConductorWorkers)
 
@@ -280,11 +310,16 @@ Request
 .. rest_parameters:: parameters.yaml
 
     - node_ident: node_ident
-    - target: power_state
+    - target: target_power_state
+    - timeout: power_timeout
 
 **Example request to power off a Node:**
 
 .. literalinclude:: samples/node-set-power-off.json
+
+**Example request to soft power off a Node with timeout:**
+
+.. literalinclude:: samples/node-set-soft-power-off.json
 
 
 Change Node Provision State

@@ -25,8 +25,10 @@ import oslo_messaging as messaging
 from ironic.common import exception
 from ironic.common import hash_ring
 from ironic.common.i18n import _
+from ironic.common import release_mappings as versions
 from ironic.common import rpc
 from ironic.conductor import manager
+from ironic.conf import CONF
 from ironic.objects import base as objects_base
 
 
@@ -85,11 +87,13 @@ class ConductorAPI(object):
     |    1.36 - Added create_node
     |    1.37 - Added destroy_volume_target and update_volume_target
     |    1.38 - Added vif_attach, vif_detach, vif_list
+    |    1.39 - Added timeout optional parameter to change_node_power_state
+    |    1.40 - Added inject_nmi
 
     """
 
     # NOTE(rloo): This must be in sync with manager.ConductorManager's.
-    RPC_API_VERSION = '1.38'
+    RPC_API_VERSION = '1.40'
 
     def __init__(self, topic=None):
         super(ConductorAPI, self).__init__()
@@ -100,8 +104,10 @@ class ConductorAPI(object):
         target = messaging.Target(topic=self.topic,
                                   version='1.0')
         serializer = objects_base.IronicObjectSerializer()
-        self.client = rpc.get_client(target,
-                                     version_cap=self.RPC_API_VERSION,
+        release_ver = versions.RELEASE_MAPPING.get(CONF.pin_release_version)
+        version_cap = (release_ver['rpc'] if release_ver
+                       else self.RPC_API_VERSION)
+        self.client = rpc.get_client(target, version_cap=version_cap,
                                      serializer=serializer)
         # NOTE(deva): this is going to be buggy
         self.ring_manager = hash_ring.HashRingManager()
@@ -118,8 +124,9 @@ class ConductorAPI(object):
 
         try:
             ring = self.ring_manager[node.driver]
-            dest = ring.get_hosts(node.uuid)
-            return self.topic + "." + dest[0]
+            dest = ring.get_nodes(node.uuid.encode('utf-8'),
+                                  replicas=CONF.hash_distribution_replicas)
+            return '%s.%s' % (self.topic, dest.pop())
         except exception.DriverNotFound:
             reason = (_('No conductor service registered which supports '
                         'driver %s.') % node.driver)
@@ -139,8 +146,8 @@ class ConductorAPI(object):
         """
         self.ring_manager.reset()
 
-        hash_ring = self.ring_manager[driver_name]
-        host = random.choice(list(hash_ring.hosts))
+        ring = self.ring_manager[driver_name]
+        host = random.choice(list(ring.nodes))
         return self.topic + "." + host
 
     def create_node(self, context, node_obj, topic=None):
@@ -154,6 +161,8 @@ class ConductorAPI(object):
         :returns: created node object.
         :raises: InterfaceNotFoundInEntrypoint if validation fails for any
                  dynamic interfaces (e.g. network_interface).
+        :raises: NoValidDefaultForInterface if no default can be calculated
+                 for some interfaces, and explicit values must be provided.
         """
         cctxt = self.client.prepare(topic=topic or self.topic, version='1.36')
         return cctxt.call(context, 'create_node', node_obj=node_obj)
@@ -174,12 +183,15 @@ class ConductorAPI(object):
         :param node_obj: a changed (but not saved) node object.
         :param topic: RPC topic. Defaults to self.topic.
         :returns: updated node object, including all fields.
+        :raises: NoValidDefaultForInterface if no default can be calculated
+                 for some interfaces, and explicit values must be provided.
 
         """
         cctxt = self.client.prepare(topic=topic or self.topic, version='1.1')
         return cctxt.call(context, 'update_node', node_obj=node_obj)
 
-    def change_node_power_state(self, context, node_id, new_state, topic=None):
+    def change_node_power_state(self, context, node_id, new_state,
+                                topic=None, timeout=None):
         """Change a node's power state.
 
         Synchronously, acquire lock and start the conductor background task
@@ -188,14 +200,16 @@ class ConductorAPI(object):
         :param context: request context.
         :param node_id: node id or uuid.
         :param new_state: one of ironic.common.states power state values
+        :param timeout: timeout (in seconds) positive integer (> 0) for any
+           power state. ``None`` indicates to use default timeout.
         :param topic: RPC topic. Defaults to self.topic.
         :raises: NoFreeConductorWorker when there is no free worker to start
                  async task.
 
         """
-        cctxt = self.client.prepare(topic=topic or self.topic, version='1.6')
+        cctxt = self.client.prepare(topic=topic or self.topic, version='1.39')
         return cctxt.call(context, 'change_node_power_state', node_id=node_id,
-                          new_state=new_state)
+                          new_state=new_state, timeout=timeout)
 
     def vendor_passthru(self, context, node_id, driver_method, http_method,
                         info, topic=None):
@@ -259,6 +273,11 @@ class ConductorAPI(object):
         :raises: DriverNotFound if the supplied driver is not loaded.
         :raises: NoFreeConductorWorker when there is no free worker to start
                  async task.
+        :raises: InterfaceNotFoundInEntrypoint if the default interface for a
+                 hardware type is invalid.
+        :raises: NoValidDefaultForInterface if no default interface
+                 implementation can be found for this driver's vendor
+                 interface.
         :returns: A dictionary containing:
 
             :return: The response of the invoked vendor method
@@ -297,6 +316,14 @@ class ConductorAPI(object):
         :param context: an admin context.
         :param driver_name: name of the driver.
         :param topic: RPC topic. Defaults to self.topic.
+        :raises: UnsupportedDriverExtension if current driver does not have
+                 vendor interface.
+        :raises: DriverNotFound if the supplied driver is not loaded.
+        :raises: InterfaceNotFoundInEntrypoint if the default interface for a
+                 hardware type is invalid.
+        :raises: NoValidDefaultForInterface if no default interface
+                 implementation can be found for this driver's vendor
+                 interface.
         :returns: dictionary of <method name>:<method metadata> entries.
 
         """
@@ -551,6 +578,25 @@ class ConductorAPI(object):
         cctxt = self.client.prepare(topic=topic or self.topic, version='1.17')
         return cctxt.call(context, 'get_boot_device', node_id=node_id)
 
+    def inject_nmi(self, context, node_id, topic=None):
+        """Inject NMI for a node.
+
+        Inject NMI (Non Maskable Interrupt) for a node immediately.
+        Be aware that not all drivers support this.
+
+        :param context: request context.
+        :param node_id: node id or uuid.
+        :raises: NodeLocked if node is locked by another conductor.
+        :raises: UnsupportedDriverExtension if the node's driver doesn't
+                 support management or management.inject_nmi.
+        :raises: InvalidParameterValue when the wrong driver info is
+                 specified or an invalid boot device is specified.
+        :raises: MissingParameterValue if missing supplied info.
+
+        """
+        cctxt = self.client.prepare(topic=topic or self.topic, version='1.40')
+        return cctxt.call(context, 'inject_nmi', node_id=node_id)
+
     def get_supported_boot_devices(self, context, node_id, topic=None):
         """Get the list of supported devices.
 
@@ -640,6 +686,11 @@ class ConductorAPI(object):
         :param topic: RPC topic. Defaults to self.topic.
         :raises: UnsupportedDriverExtension if the driver doesn't
             support RAID configuration.
+        :raises: InterfaceNotFoundInEntrypoint if the default interface for a
+                 hardware type is invalid.
+        :raises: NoValidDefaultForInterface if no default interface
+                 implementation can be found for this driver's RAID
+                 interface.
         :returns: A dictionary containing the properties that can be mentioned
             for logical disks and a textual description for them.
         """

@@ -78,8 +78,8 @@ Driver-Specific Periodic Tasks
 ------------------------------
 
 Drivers may run their own periodic tasks, i.e. actions run repeatedly after
-a certain amount of time. Such task is created by decorating a method on
-an interface with periodic_ decorator, e.g.
+a certain amount of time. Such a task is created by using the periodic_
+decorator on an interface method. For example
 
 ::
 
@@ -93,11 +93,6 @@ an interface with periodic_ decorator, e.g.
 
 Here the ``spacing`` argument is a period in seconds for a given periodic task.
 For example 'spacing=5' means every 5 seconds.
-
-.. note::
-    In releases prior to and including the Newton release, it's possible to
-    bind periodic tasks to a driver object instead of an interface. This is
-    deprecated and support for it will be removed in the Ocata release.
 
 
 Message Routing
@@ -122,5 +117,5 @@ driver actions such as take-over or clean-up.
 .. _Conductor service: ../api/ironic.conductor.manager.html
 .. _DB API: ../api/ironic.db.api.html
 .. _diskimage-builder: http://docs.openstack.org/developer/diskimage-builder/
-.. _consistent hashing algorithm: ../api/ironic.common.hash_ring.html
+.. _consistent hashing algorithm: http://docs.openstack.org/developer/tooz/tutorial/hashring.html
 .. _periodic: http://docs.openstack.org/developer/futurist/api.html#futurist.periodics.periodic

@@ -184,7 +184,7 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
         :returns: a :class:`Node` object.
         """
         db_node = cls.dbapi.get_node_by_id(node_id)
-        node = Node._from_db_object(cls(context), db_node)
+        node = cls._from_db_object(cls(context), db_node)
         return node
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -199,7 +199,7 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
         :returns: a :class:`Node` object.
         """
         db_node = cls.dbapi.get_node_by_uuid(uuid)
-        node = Node._from_db_object(cls(context), db_node)
+        node = cls._from_db_object(cls(context), db_node)
         return node
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -214,7 +214,7 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
         :returns: a :class:`Node` object.
         """
         db_node = cls.dbapi.get_node_by_name(name)
-        node = Node._from_db_object(cls(context), db_node)
+        node = cls._from_db_object(cls(context), db_node)
         return node
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -229,7 +229,7 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
         :returns: a :class:`Node` object.
         """
         db_node = cls.dbapi.get_node_by_instance(instance_uuid)
-        node = Node._from_db_object(cls(context), db_node)
+        node = cls._from_db_object(cls(context), db_node)
         return node
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -274,7 +274,7 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
 
         """
         db_node = cls.dbapi.reserve_node(tag, node_id)
-        node = Node._from_db_object(cls(context), db_node)
+        node = cls._from_db_object(cls(context), db_node)
         return node
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -361,7 +361,13 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
             # Clean driver_internal_info when changes driver
             self.driver_internal_info = {}
             updates = self.obj_get_changes()
-        self.dbapi.update_node(self.uuid, updates)
+        db_node = self.dbapi.update_node(self.uuid, updates)
+
+        # TODO(galyna): updating specific field not touching others to not
+        # change default behaviour. Otherwise it will break a bunch of tests
+        # This can be updated in other way when more fields like `updated_at`
+        # will appear
+        self.updated_at = db_node['updated_at']
         self.obj_reset_changes()
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
@@ -378,8 +384,9 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
                         A context should be set when instantiating the
                         object, e.g.: Node(context)
         """
-        current = self.__class__.get_by_uuid(self._context, self.uuid)
+        current = self.get_by_uuid(self._context, self.uuid)
         self.obj_refresh(current)
+        self.obj_reset_changes()
 
     # NOTE(xek): We don't want to enable RPC on this call just yet. Remotable
     # methods can be used in the future to replace current explicit RPC calls.
@@ -399,7 +406,7 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
         :returns: a :class:`Node` object.
         """
         db_node = cls.dbapi.get_node_by_port_addresses(addresses)
-        node = Node._from_db_object(cls(context), db_node)
+        node = cls._from_db_object(cls(context), db_node)
         return node
 
 
@@ -427,7 +434,15 @@ class NodePayload(notification.NotificationPayloadBase):
         'maintenance': ('node', 'maintenance'),
         'maintenance_reason': ('node', 'maintenance_reason'),
         'name': ('node', 'name'),
+        'boot_interface': ('node', 'boot_interface'),
+        'console_interface': ('node', 'console_interface'),
+        'deploy_interface': ('node', 'deploy_interface'),
+        'inspect_interface': ('node', 'inspect_interface'),
+        'management_interface': ('node', 'management_interface'),
         'network_interface': ('node', 'network_interface'),
+        'power_interface': ('node', 'power_interface'),
+        'raid_interface': ('node', 'raid_interface'),
+        'vendor_interface': ('node', 'vendor_interface'),
         'power_state': ('node', 'power_state'),
         'properties': ('node', 'properties'),
         'provision_state': ('node', 'provision_state'),
@@ -447,7 +462,8 @@ class NodePayload(notification.NotificationPayloadBase):
     # Version 1.1: Type of network_interface changed to just nullable string
     #              similar to version 1.20 of Node.
     # Version 1.2: Add nullable to console_enabled and maintenance.
-    VERSION = '1.2'
+    # Version 1.3: Add dynamic interfaces fields exposed via API.
+    VERSION = '1.3'
     fields = {
         'clean_step': object_fields.FlexibleDictField(nullable=True),
         'console_enabled': object_fields.BooleanField(nullable=True),
@@ -460,7 +476,15 @@ class NodePayload(notification.NotificationPayloadBase):
         'last_error': object_fields.StringField(nullable=True),
         'maintenance': object_fields.BooleanField(nullable=True),
         'maintenance_reason': object_fields.StringField(nullable=True),
+        'boot_interface': object_fields.StringField(nullable=True),
+        'console_interface': object_fields.StringField(nullable=True),
+        'deploy_interface': object_fields.StringField(nullable=True),
+        'inspect_interface': object_fields.StringField(nullable=True),
+        'management_interface': object_fields.StringField(nullable=True),
         'network_interface': object_fields.StringField(nullable=True),
+        'power_interface': object_fields.StringField(nullable=True),
+        'raid_interface': object_fields.StringField(nullable=True),
+        'vendor_interface': object_fields.StringField(nullable=True),
         'name': object_fields.StringField(nullable=True),
         'power_state': object_fields.StringField(nullable=True),
         'properties': object_fields.FlexibleDictField(nullable=True),
@@ -495,7 +519,8 @@ class NodeSetPowerStatePayload(NodePayload):
     # Version 1.0: Initial version
     # Version 1.1: Parent NodePayload version 1.1
     # Version 1.2: Parent NodePayload version 1.2
-    VERSION = '1.2'
+    # Version 1.3: Parent NodePayload version 1.3
+    VERSION = '1.3'
 
     fields = {
         # "to_power" indicates the future target_power_state of the node. A
@@ -538,7 +563,8 @@ class NodeCorrectedPowerStatePayload(NodePayload):
     # Version 1.0: Initial version
     # Version 1.1: Parent NodePayload version 1.1
     # Version 1.2: Parent NodePayload version 1.2
-    VERSION = '1.2'
+    # Version 1.3: Parent NodePayload version 1.3
+    VERSION = '1.3'
 
     fields = {
         'from_power': object_fields.StringField(nullable=True)
@@ -566,7 +592,8 @@ class NodeSetProvisionStatePayload(NodePayload):
     # Version 1.0: Initial version
     # Version 1.1: Parent NodePayload version 1.1
     # Version 1.2: Parent NodePayload version 1.2
-    VERSION = '1.2'
+    # Version 1.3: Parent NodePayload version 1.3
+    VERSION = '1.3'
 
     SCHEMA = dict(NodePayload.SCHEMA,
                   **{'instance_info': ('node', 'instance_info')})
@@ -600,7 +627,8 @@ class NodeCRUDNotification(notification.NotificationBase):
 class NodeCRUDPayload(NodePayload):
     """Payload schema for when ironic creates, updates or deletes a node."""
     # Version 1.0: Initial version
-    VERSION = '1.0'
+    # Version 1.1: Parent NodePayload version 1.3
+    VERSION = '1.1'
 
     SCHEMA = dict(NodePayload.SCHEMA,
                   **{'instance_info': ('node', 'instance_info'),

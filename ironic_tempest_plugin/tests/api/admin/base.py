@@ -33,7 +33,7 @@ SUPPORTED_DRIVERS = ['fake']
 
 # NOTE(jroll): resources must be deleted in a specific order, this list
 # defines the resource types to clean up, and the correct order.
-RESOURCE_TYPES = ['port', 'node', 'chassis']
+RESOURCE_TYPES = ['port', 'node', 'chassis', 'portgroup']
 
 
 def creates(resource):
@@ -118,6 +118,28 @@ class BaseBaremetalTest(api_version_utils.BaseMicroversionTest,
         finally:
             super(BaseBaremetalTest, cls).resource_cleanup()
 
+    def _assertExpected(self, expected, actual):
+        """Check if expected keys/values exist in actual response body.
+
+        Check if the expected keys and values are in the actual response body.
+        It will not check the keys 'created_at' and 'updated_at', since they
+        will always have different values. Asserts if any expected key (or
+        corresponding value) is not in the actual response.
+
+        Note: this method has an underscore even though it is used outside of
+        this class, in order to distinguish this method from the more standard
+        assertXYZ methods.
+
+        :param expected: dict of key-value pairs that are expected to be in
+                         'actual' dict.
+        :param actual: dict of key-value pairs.
+
+        """
+        for key, value in expected.items():
+            if key not in ('created_at', 'updated_at'):
+                self.assertIn(key, actual)
+                self.assertEqual(value, actual[key])
+
     def setUp(self):
         super(BaseBaremetalTest, self).setUp()
         self.useFixture(api_microversion_fixture.APIMicroversionFixture(
@@ -125,16 +147,17 @@ class BaseBaremetalTest(api_version_utils.BaseMicroversionTest,
 
     @classmethod
     @creates('chassis')
-    def create_chassis(cls, description=None):
+    def create_chassis(cls, description=None, **kwargs):
         """Wrapper utility for creating test chassis.
 
         :param description: A description of the chassis. If not supplied,
             a random value will be generated.
-        :return: Created chassis.
+        :return: A tuple with the server response and the created chassis.
 
         """
         description = description or data_utils.rand_name('test-chassis')
-        resp, body = cls.client.create_chassis(description=description)
+        resp, body = cls.client.create_chassis(description=description,
+                                               **kwargs)
         return resp, body
 
     @classmethod
@@ -148,7 +171,7 @@ class BaseBaremetalTest(api_version_utils.BaseMicroversionTest,
         :param cpus: Number of CPUs. Default: 8.
         :param local_gb: Disk size. Default: 10.
         :param memory_mb: Available RAM. Default: 4096.
-        :return: Created node.
+        :return: A tuple with the server response and the created node.
 
         """
         resp, body = cls.client.create_node(chassis_id, cpu_arch=cpu_arch,
@@ -168,12 +191,24 @@ class BaseBaremetalTest(api_version_utils.BaseMicroversionTest,
         :param extra: Meta data of the port. If not supplied, an empty
             dictionary will be created.
         :param uuid: UUID of the port.
-        :return: Created port.
+        :return: A tuple with the server response and the created port.
 
         """
         extra = extra or {}
         resp, body = cls.client.create_port(address=address, node_id=node_id,
                                             extra=extra, uuid=uuid)
+
+        return resp, body
+
+    @classmethod
+    @creates('portgroup')
+    def create_portgroup(cls, node_uuid, **kwargs):
+        """Wrapper utility for creating test port groups.
+
+        :param node_uuid: The unique identifier of the node.
+        :return: A tuple with the server response and the created port group.
+        """
+        resp, body = cls.client.create_portgroup(node_uuid=node_uuid, **kwargs)
 
         return resp, body
 
@@ -225,10 +260,24 @@ class BaseBaremetalTest(api_version_utils.BaseMicroversionTest,
 
         return resp
 
+    @classmethod
+    def delete_portgroup(cls, portgroup_ident):
+        """Deletes a port group having the specified UUID or name.
+
+        :param portgroup_ident: The name or UUID of the port group.
+        :return: Server response.
+        """
+        resp, body = cls.client.delete_portgroup(portgroup_ident)
+
+        if portgroup_ident in cls.created_objects['portgroup']:
+            cls.created_objects['portgroup'].remove(portgroup_ident)
+
+        return resp
+
     def validate_self_link(self, resource, uuid, link):
         """Check whether the given self link formatted correctly."""
         expected_link = "{base}/{pref}/{res}/{uuid}".format(
-                        base=self.client.base_url,
+                        base=self.client.base_url.rstrip('/'),
                         pref=self.client.uri_prefix,
                         res=resource,
                         uuid=uuid)

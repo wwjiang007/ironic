@@ -15,9 +15,10 @@
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import excutils
+from oslo_utils import reflection
 
 from ironic.common import exception
-from ironic.common.i18n import _, _LE, _LI, _LW
+from ironic.common.i18n import _
 from ironic.common import states
 from ironic.conductor import notification_utils as notify_utils
 from ironic.conductor import task_manager
@@ -67,15 +68,15 @@ def node_set_boot_device(task, device, persistent=False):
 
 
 @task_manager.require_exclusive_lock
-def node_power_action(task, new_state):
+def node_power_action(task, new_state, timeout=None):
     """Change power state or reset for a node.
 
     Perform the requested power action if the transition is required.
 
     :param task: a TaskManager instance containing the node to act on.
-    :param new_state: Any power state from ironic.common.states. If the
-        state is 'REBOOT' then a reboot will be attempted, otherwise
-        the node power state is directly set to 'state'.
+    :param new_state: Any power state from ironic.common.states.
+    :param timeout: timeout (in seconds) positive integer (> 0) for any
+      power state. ``None`` indicates to use default timeout.
     :raises: InvalidParameterValue when the wrong state is specified
              or the wrong driver info is specified.
     :raises: other exceptions by the node's power driver if something
@@ -86,50 +87,62 @@ def node_power_action(task, new_state):
         task, fields.NotificationLevel.INFO, fields.NotificationStatus.START,
         new_state)
     node = task.node
-    target_state = states.POWER_ON if new_state == states.REBOOT else new_state
 
-    if new_state != states.REBOOT:
-        try:
-            curr_state = task.driver.power.get_power_state(task)
-        except Exception as e:
-            with excutils.save_and_reraise_exception():
-                node['last_error'] = _(
-                    "Failed to change power state to '%(target)s'. "
-                    "Error: %(error)s") % {'target': new_state, 'error': e}
-                node['target_power_state'] = states.NOSTATE
-                node.save()
-                notify_utils.emit_power_set_notification(
-                    task, fields.NotificationLevel.ERROR,
-                    fields.NotificationStatus.ERROR, new_state)
+    if new_state in (states.POWER_ON, states.REBOOT, states.SOFT_REBOOT):
+        target_state = states.POWER_ON
+    elif new_state in (states.POWER_OFF, states.SOFT_POWER_OFF):
+        target_state = states.POWER_OFF
+    else:
+        target_state = None
 
-        if curr_state == new_state:
-            # Neither the ironic service nor the hardware has erred. The
-            # node is, for some reason, already in the requested state,
-            # though we don't know why. eg, perhaps the user previously
-            # requested the node POWER_ON, the network delayed those IPMI
-            # packets, and they are trying again -- but the node finally
-            # responds to the first request, and so the second request
-            # gets to this check and stops.
-            # This isn't an error, so we'll clear last_error field
-            # (from previous operation), log a warning, and return.
-            node['last_error'] = None
-            # NOTE(dtantsur): under rare conditions we can get out of sync here
-            node['power_state'] = new_state
+    def _not_going_to_change():
+        # Neither the ironic service nor the hardware has erred. The
+        # node is, for some reason, already in the requested state,
+        # though we don't know why. eg, perhaps the user previously
+        # requested the node POWER_ON, the network delayed those IPMI
+        # packets, and they are trying again -- but the node finally
+        # responds to the first request, and so the second request
+        # gets to this check and stops.
+        # This isn't an error, so we'll clear last_error field
+        # (from previous operation), log a warning, and return.
+        node['last_error'] = None
+        # NOTE(dtantsur): under rare conditions we can get out of sync here
+        node['power_state'] = curr_state
+        node['target_power_state'] = states.NOSTATE
+        node.save()
+        notify_utils.emit_power_set_notification(
+            task, fields.NotificationLevel.INFO,
+            fields.NotificationStatus.END, new_state)
+        LOG.warning("Not going to change node %(node)s power state because "
+                    "current state = requested state = '%(state)s'.",
+                    {'node': node.uuid, 'state': curr_state})
+
+    try:
+        curr_state = task.driver.power.get_power_state(task)
+    except Exception as e:
+        with excutils.save_and_reraise_exception():
+            node['last_error'] = _(
+                "Failed to change power state to '%(target)s'. "
+                "Error: %(error)s") % {'target': new_state, 'error': e}
             node['target_power_state'] = states.NOSTATE
             node.save()
             notify_utils.emit_power_set_notification(
-                task, fields.NotificationLevel.INFO,
-                fields.NotificationStatus.END, new_state)
-            LOG.warning(_LW("Not going to change node %(node)s power "
-                            "state because current state = requested state "
-                            "= '%(state)s'."),
-                        {'node': node.uuid, 'state': curr_state})
-            return
+                task, fields.NotificationLevel.ERROR,
+                fields.NotificationStatus.ERROR, new_state)
 
-        if curr_state == states.ERROR:
-            # be optimistic and continue action
-            LOG.warning(_LW("Driver returns ERROR power state for node %s."),
-                        node.uuid)
+    if curr_state == states.POWER_ON:
+        if new_state == states.POWER_ON:
+            _not_going_to_change()
+            return
+    elif curr_state == states.POWER_OFF:
+        if new_state in (states.POWER_OFF, states.SOFT_POWER_OFF):
+            _not_going_to_change()
+            return
+    else:
+        # if curr_state == states.ERROR:
+        # be optimistic and continue action
+        LOG.warning("Driver returns ERROR power state for node %s.",
+                    node.uuid)
 
     # Set the target_power_state and clear any last_error, if we're
     # starting a new operation. This will expose to other processes
@@ -142,15 +155,37 @@ def node_power_action(task, new_state):
     # take power action
     try:
         if new_state != states.REBOOT:
-            task.driver.power.set_power_state(task, new_state)
+            if ('timeout' in reflection.get_signature(
+                    task.driver.power.set_power_state).parameters):
+                task.driver.power.set_power_state(task, new_state,
+                                                  timeout=timeout)
+            else:
+                # FIXME(naohirot):
+                # After driver composition, we should print power interface
+                # name here instead of driver.
+                LOG.warning(
+                    "The set_power_state method of %(driver_name)s "
+                    "doesn't support 'timeout' parameter.",
+                    {'driver_name': node.driver})
+                task.driver.power.set_power_state(task, new_state)
         else:
-            task.driver.power.reboot(task)
+            if ('timeout' in reflection.get_signature(
+                    task.driver.power.reboot).parameters):
+                task.driver.power.reboot(task, timeout=timeout)
+            else:
+                LOG.warning("The reboot method of %(driver_name)s "
+                            "doesn't support 'timeout' parameter.",
+                            {'driver_name': node.driver})
+                task.driver.power.reboot(task)
     except Exception as e:
         with excutils.save_and_reraise_exception():
             node['target_power_state'] = states.NOSTATE
             node['last_error'] = _(
-                "Failed to change power state to '%(target)s'. "
-                "Error: %(error)s") % {'target': target_state, 'error': e}
+                "Failed to change power state to '%(target_state)s' "
+                "by '%(new_state)s'. Error: %(error)s") % {
+                    'target_state': target_state,
+                    'new_state': new_state,
+                    'error': e}
             node.save()
             notify_utils.emit_power_set_notification(
                 task, fields.NotificationLevel.ERROR,
@@ -163,9 +198,11 @@ def node_power_action(task, new_state):
         notify_utils.emit_power_set_notification(
             task, fields.NotificationLevel.INFO, fields.NotificationStatus.END,
             new_state)
-        LOG.info(_LI('Successfully set node %(node)s power state to '
-                     '%(state)s.'),
-                 {'node': node.uuid, 'state': target_state})
+        LOG.info('Successfully set node %(node)s power state to '
+                 '%(target_state)s by %(new_state)s.',
+                 {'node': node.uuid,
+                  'target_state': target_state,
+                  'new_state': new_state})
 
 
 @task_manager.require_exclusive_lock
@@ -220,10 +257,10 @@ def provisioning_error_handler(e, node, provision_state,
         node.target_provision_state = target_provision_state
         node.last_error = (_("No free conductor workers available"))
         node.save()
-        LOG.warning(_LW("No free conductor workers available to perform "
-                        "an action on node %(node)s, setting node's "
-                        "provision_state back to %(prov_state)s and "
-                        "target_provision_state to %(tgt_prov_state)s."),
+        LOG.warning("No free conductor workers available to perform "
+                    "an action on node %(node)s, setting node's "
+                    "provision_state back to %(prov_state)s and "
+                    "target_provision_state to %(tgt_prov_state)s.",
                     {'node': node.uuid, 'prov_state': provision_state,
                      'tgt_prov_state': target_provision_state})
 
@@ -267,8 +304,8 @@ def cleaning_error_handler(task, msg, tear_down_cleaning=True,
         try:
             task.driver.deploy.tear_down_cleaning(task)
         except Exception as e:
-            msg = (_LE('Failed to tear down cleaning on node %(uuid)s, '
-                       'reason: %(err)s'), {'err': e, 'uuid': node.uuid})
+            msg = ('Failed to tear down cleaning on node %(uuid)s, '
+                   'reason: %(err)s' % {'err': e, 'uuid': node.uuid})
             LOG.exception(msg)
 
     if set_fail_state:
@@ -281,8 +318,8 @@ def spawn_cleaning_error_handler(e, node):
     if isinstance(e, exception.NoFreeConductorWorker):
         node.last_error = (_("No free conductor workers available"))
         node.save()
-        LOG.warning(_LW("No free conductor workers available to perform "
-                        "cleaning on node %(node)s"), {'node': node.uuid})
+        LOG.warning("No free conductor workers available to perform "
+                    "cleaning on node %(node)s", {'node': node.uuid})
 
 
 def power_state_error_handler(e, node, power_state):
@@ -304,9 +341,9 @@ def power_state_error_handler(e, node, power_state):
         node.target_power_state = states.NOSTATE
         node.last_error = (_("No free conductor workers available"))
         node.save()
-        LOG.warning(_LW("No free conductor workers available to perform "
-                        "an action on node %(node)s, setting node's "
-                        "power state back to %(power_state)s."),
+        LOG.warning("No free conductor workers available to perform "
+                    "an action on node %(node)s, setting node's "
+                    "power state back to %(power_state)s.",
                     {'node': node.uuid, 'power_state': power_state})
 
 
@@ -375,7 +412,8 @@ def set_node_cleaning_steps(task):
         # Now that we know what the driver's available clean steps are, we can
         # do further checks to validate the user's clean steps.
         steps = node.driver_internal_info['clean_steps']
-        _validate_user_clean_steps(task, steps)
+        driver_internal_info['clean_steps'] = (
+            _validate_user_clean_steps(task, steps))
 
     node.clean_step = {}
     driver_internal_info['clean_step_index'] = None
@@ -402,6 +440,7 @@ def _validate_user_clean_steps(task, user_steps):
     :raises: InvalidParameterValue if validation of clean steps fails.
     :raises: NodeCleaningFailure if there was a problem getting the
         clean steps from the driver.
+    :return: validated clean steps update with information from the driver
     """
 
     def step_id(step):
@@ -423,6 +462,7 @@ def _validate_user_clean_steps(task, user_steps):
     for s in _get_cleaning_steps(task, enabled=False, sort=False):
         driver_steps[step_id(s)] = s
 
+    result = []
     for user_step in user_steps:
         # Check if this user_specified clean step isn't supported by the driver
         try:
@@ -457,5 +497,11 @@ def _validate_user_clean_steps(task, user_steps):
                                                 'miss': ', '.join(missing)}
             errors.append(error)
 
+        # Copy fields that should not be provided by a user
+        user_step['abortable'] = driver_step.get('abortable', False)
+        user_step['priority'] = driver_step.get('priority', 0)
+        result.append(user_step)
+
     if errors:
         raise exception.InvalidParameterValue('; '.join(errors))
+    return result

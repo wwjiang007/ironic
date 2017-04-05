@@ -13,11 +13,24 @@
 import functools
 
 from oslo_serialization import jsonutils as json
+from six.moves import http_client
 from six.moves.urllib import parse as urllib
 from tempest.lib.common import api_version_utils
 from tempest.lib.common import rest_client
 
+# NOTE(vsaienko): concurrent tests work because they are launched in
+# separate processes so global variables are not shared among them.
 BAREMETAL_MICROVERSION = None
+
+
+def set_baremetal_api_microversion(baremetal_microversion):
+    global BAREMETAL_MICROVERSION
+    BAREMETAL_MICROVERSION = baremetal_microversion
+
+
+def reset_baremetal_api_microversion():
+    global BAREMETAL_MICROVERSION
+    BAREMETAL_MICROVERSION = None
 
 
 def handle_errors(f):
@@ -115,10 +128,13 @@ class BaremetalClient(rest_client.RestClient):
 
         return patch
 
-    def _list_request(self, resource, permanent=False, **kwargs):
+    def _list_request(self, resource, permanent=False, headers=None,
+                      extra_headers=False, **kwargs):
         """Get the list of objects of the specified type.
 
         :param resource: The name of the REST resource, e.g., 'nodes'.
+        :param headers: List of headers to use in request.
+        :param extra_headers: Specify whether to use headers.
         :param **kwargs: Parameters for the request.
         :returns: A tuple with the server response and deserialized JSON list
                  of objects
@@ -128,8 +144,9 @@ class BaremetalClient(rest_client.RestClient):
         if kwargs:
             uri += "?%s" % urllib.urlencode(kwargs)
 
-        resp, body = self.get(uri)
-        self.expected_success(200, resp.status)
+        resp, body = self.get(uri, headers=headers,
+                              extra_headers=extra_headers)
+        self.expected_success(http_client.OK, resp.status)
 
         return resp, self.deserialize(body)
 
@@ -145,7 +162,7 @@ class BaremetalClient(rest_client.RestClient):
         else:
             uri = self._get_uri(resource, uuid=uuid, permanent=permanent)
         resp, body = self.get(uri)
-        self.expected_success(200, resp.status)
+        self.expected_success(http_client.OK, resp.status)
 
         return resp, self.deserialize(body)
 
@@ -163,9 +180,28 @@ class BaremetalClient(rest_client.RestClient):
         uri = self._get_uri(resource)
 
         resp, body = self.post(uri, body=body)
-        self.expected_success(201, resp.status)
+        self.expected_success(http_client.CREATED, resp.status)
 
         return resp, self.deserialize(body)
+
+    def _create_request_no_response_body(self, resource, object_dict):
+        """Create an object of the specified type.
+
+           Do not expect any body in the response.
+
+        :param resource: The name of the REST resource, e.g., 'nodes'.
+        :param object_dict: A Python dict that represents an object of the
+                            specified type.
+        :returns: The server response.
+        """
+
+        body = self.serialize(object_dict)
+        uri = self._get_uri(resource)
+
+        resp, body = self.post(uri, body=body)
+        self.expected_success(http_client.NO_CONTENT, resp.status)
+
+        return resp
 
     def _delete_request(self, resource, uuid):
         """Delete specified object.
@@ -178,7 +214,7 @@ class BaremetalClient(rest_client.RestClient):
         uri = self._get_uri(resource, uuid)
 
         resp, body = self.delete(uri)
-        self.expected_success(204, resp.status)
+        self.expected_success(http_client.NO_CONTENT, resp.status)
         return resp, body
 
     def _patch_request(self, resource, uuid, patch_object):
@@ -194,7 +230,7 @@ class BaremetalClient(rest_client.RestClient):
         patch_body = json.dumps(patch_object)
 
         resp, body = self.patch(uri, body=patch_body)
-        self.expected_success(200, resp.status)
+        self.expected_success(http_client.OK, resp.status)
         return resp, self.deserialize(body)
 
     @handle_errors
@@ -219,5 +255,6 @@ class BaremetalClient(rest_client.RestClient):
         put_body = json.dumps(put_object)
 
         resp, body = self.put(uri, body=put_body)
-        self.expected_success([202, 204], resp.status)
+        self.expected_success([http_client.ACCEPTED, http_client.NO_CONTENT],
+                              resp.status)
         return resp, body

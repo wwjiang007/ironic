@@ -36,15 +36,15 @@ For postgres on Ubuntu this can be done with the following commands:
 
 import collections
 import contextlib
-import fixtures
 
 from alembic import script
+import fixtures
 import mock
 from oslo_db import exception as db_exc
 from oslo_db.sqlalchemy import enginefacade
-from oslo_db.sqlalchemy import test_base
 from oslo_db.sqlalchemy import test_migrations
 from oslo_db.sqlalchemy import utils as db_utils
+from oslo_db.tests.sqlalchemy import base as test_base
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 import sqlalchemy
@@ -79,21 +79,6 @@ def _get_connect_string(backend, user, passwd, database):
     return ("%(backend)s://%(user)s:%(passwd)s@localhost/%(database)s"
             % {'backend': backend, 'user': user, 'passwd': passwd,
                'database': database})
-
-
-def _is_backend_avail(backend, user, passwd, database):
-    try:
-        connect_uri = _get_connect_string(backend, user, passwd, database)
-        engine = sqlalchemy.create_engine(connect_uri)
-        connection = engine.connect()
-    except Exception:
-        # intentionally catch all to handle exceptions even if we don't
-        # have any backend code loaded.
-        return False
-    else:
-        connection.close()
-        engine.dispose()
-        return True
 
 
 @contextlib.contextmanager
@@ -223,16 +208,6 @@ class MigrationCheckersMixin(object):
 
     def test_walk_versions(self):
         self._walk_versions(self.engine, self.config)
-
-    def test_connect_fail(self):
-        """Test that we can trigger a database connection failure
-
-        Test that we can fail gracefully to ensure we don't break people
-        without specific database backend
-        """
-        if _is_backend_avail(self.FIXTURE.DRIVER, "openstack_cifail",
-                             self.FIXTURE.USERNAME, self.FIXTURE.DBNAME):
-            self.fail("Shouldn't have connected")
 
     def _check_21b331f883ef(self, engine, data):
         nodes = db_utils.get_table(engine, 'nodes')
@@ -629,6 +604,36 @@ class MigrationCheckersMixin(object):
         self.assertIn('storage_interface', col_names)
         self.assertIsInstance(nodes.c.storage_interface.type,
                               sqlalchemy.types.String)
+
+    def _check_2353895ecfae(self, engine, data):
+        ifaces = db_utils.get_table(engine, 'conductor_hardware_interfaces')
+        col_names = [column.name for column in ifaces.c]
+        expected_names = ['created_at', 'updated_at', 'id', 'conductor_id',
+                          'hardware_type', 'interface_type', 'interface_name']
+        self.assertEqual(sorted(expected_names), sorted(col_names))
+
+        self.assertIsInstance(ifaces.c.created_at.type,
+                              sqlalchemy.types.DateTime)
+        self.assertIsInstance(ifaces.c.updated_at.type,
+                              sqlalchemy.types.DateTime)
+        self.assertIsInstance(ifaces.c.id.type,
+                              sqlalchemy.types.Integer)
+        self.assertIsInstance(ifaces.c.conductor_id.type,
+                              sqlalchemy.types.Integer)
+        self.assertIsInstance(ifaces.c.hardware_type.type,
+                              sqlalchemy.types.String)
+        self.assertIsInstance(ifaces.c.interface_type.type,
+                              sqlalchemy.types.String)
+        self.assertIsInstance(ifaces.c.interface_name.type,
+                              sqlalchemy.types.String)
+
+    def _check_dbefd6bdaa2c(self, engine, data):
+        ifaces = db_utils.get_table(engine, 'conductor_hardware_interfaces')
+        col_names = [column.name for column in ifaces.c]
+        self.assertIn('default', col_names)
+        self.assertIsInstance(ifaces.c.default.type,
+                              (sqlalchemy.types.Boolean,
+                               sqlalchemy.types.Integer))
 
     def test_upgrade_and_version(self):
         with patch_with_engine(self.engine):
